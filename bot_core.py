@@ -19,6 +19,7 @@ import requests
 from urllib.parse import urlparse, parse_qs
 import re  # neu: für Solana-Adressprüfung
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
+import time
 
 # Matplotlib (headless) für Debug-Charts
 import matplotlib
@@ -4475,15 +4476,23 @@ async def cmd_dsraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1) Query aus Args, sonst eine kleine Default-Kaskade (ohne 'chain:solana')
     user_q = " ".join(context.args).strip() if context.args else None
     queries = [user_q] if user_q else ["quoteToken:SOL", "raydium", "sol usdc", "pumpfun"]
-
-    def _fmt_usd(x: float) -> str:
+    
+    def _fmt_usd(x) -> str:
+        """Komakter USD-Formatter: 1.23k / 4.56M / 7.89B."""
         try:
-            return f"${int(float(x)):,}"
+            v = float(x or 0)
         except Exception:
-            try:
-                return f"${float(x):,.2f}"
-            except Exception:
-                return "$0"
+            v = 0.0
+        sgn = "-" if v < 0 else ""
+        v = abs(v)
+        if v >= 1_000_000_000:
+            return f"{sgn}${v/1_000_000_000:.2f}B"
+        if v >= 1_000_000:
+            return f"{sgn}${v/1_000_000:.2f}M"
+        if v >= 1_000:
+            return f"{sgn}${v/1_000:.2f}k"
+        return f"{sgn}${v:.2f}"
+
 
     async def _search(q: str) -> list[dict]:
         js = await _get_json(_wrap(f"{DS_BASE}/search?q={quote_plus(q)}"))
