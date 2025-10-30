@@ -3534,29 +3534,23 @@ async def _liq_check_one_and_report(mint: str) -> tuple[str, dict, dict]:
     return mint, cur, prev
 
 def _liq_format_line(mint: str, cur: dict, prev: dict) -> str:
-    """
-    Formatierte Report-Zeile mit Tokenname und Dexscreener-Link + Richtungspfeil für LP.
-    """
     refs = cur["total_refs"]; lp = cur["lp_sol"]
-    # Delta berechnen
     prev_refs = int(prev.get("last_total_refs") or 0)
     prev_lp   = float(prev.get("last_lp_sol") or 0.0)
     d_refs = refs - prev_refs
     d_lp_pct_raw = _calc_delta_pct(prev_lp, lp)
-    # Icons
+    arrow, _ = _lp_dir_arrow(prev_lp, lp)
+
     ico_r = "✅" if cur["raydium_refs"]>0 else "❌"
     ico_o = "✅" if cur["orca_refs"]>0    else "❌"
     ico_m = "✅" if cur["meteora_refs"]>0 else "❌"
-    # Delta-Text
-    d_refs_txt = f"{'+' if d_refs>=0 else ''}{d_refs}"
-    lp_dir = "📈" if d_lp_pct_raw >= 0 else "📉"
-    d_lp_txt   = f"{int(abs(d_lp_pct_raw))}%"
-    # Name + Link
+
     name = (cur.get("name") or "").strip() or (mint[:6] + "…")
     url  = (cur.get("ds_url") or f"https://dexscreener.com/solana/{mint}")
+    d_refs_txt = f"{'+' if d_refs>=0 else ''}{d_refs}"
+    # LP-Teil inkl. Richtungspfeil
     return (f"{name} ({mint[:6]}…)  Refs={refs} ({ico_r}R {ico_o}O {ico_m}M, Δ={d_refs_txt})  "
-            f"LP≈{_fmt_lp(lp)} SOL ({lp_dir} Δ={d_lp_txt})  {url}")
-
+            f"LP≈{_fmt_lp(lp)} SOL ({arrow} {_fmt_pct(d_lp_pct_raw)})  {url}")
 
 async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
     if not LIQ_CFG["prune_empty"]:
@@ -3571,27 +3565,59 @@ async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
         return "pruned: no pools"
     return None
 
+def _lp_dir_arrow(prev_lp: float, cur_lp: float) -> tuple[str, str]:
+    """
+    Gibt (arrow, word) zurück:
+      "↑" / "↓" (bzw. "→" wenn unverändert) und "up"/"down"/"flat".
+    """
+    try:
+        p = float(prev_lp or 0.0)
+        c = float(cur_lp or 0.0)
+    except Exception:
+        p, c = 0.0, 0.0
+    if c > p:
+        return "↑", "up"
+    if c < p:
+        return "↓", "down"
+    return "→", "flat"
+
+def _fmt_pct(x: float) -> str:
+    try:
+        return f"{abs(x):.0f}%"
+    except Exception:
+        return "0%"
+
+
 def _liq_should_alert(cur: dict, prev: dict) -> tuple[bool, list[str]]:
     """
-    Liefert (should_alert, messages[]), wobei die LP-Änderung eine Richtung (📈/📉) trägt.
+    Liefert (should_alert, messages[]).
+    LP-Text enthält jetzt klare Richtungspfeile und absolute/relative Änderung.
     """
     msgs = []
-    # Refs-Alert
+
+    # Refs-Delta
     prev_refs = int(prev.get("last_total_refs") or 0)
     cur_refs  = int(cur.get("total_refs") or 0)
     if abs(cur_refs - prev_refs) >= LIQ_CFG["delta_refs"]:
-        if cur_refs > prev_refs:
-            msgs.append(f"Refs +{cur_refs - prev_refs}")
-        else:
-            msgs.append(f"Refs {cur_refs - prev_refs}")
-    # LP-Alert
+        sign = "+" if (cur_refs - prev_refs) >= 0 else ""
+        msgs.append(f"Refs {sign}{cur_refs - prev_refs}")
+
+    # LP-Delta (in %)
     prev_lp = float(prev.get("last_lp_sol") or 0.0)
     cur_lp  = float(cur.get("lp_sol") or 0.0)
-    delta_lp_pct = abs(_calc_delta_pct(prev_lp, cur_lp))
-    if delta_lp_pct >= LIQ_CFG["delta_lp_pct"]:
-        arrow = "📈" if cur_lp >= prev_lp else "📉"
-        msgs.append(f"{arrow} LP {int(delta_lp_pct)}%")
-    return (len(msgs)>0, msgs)
+    delta_pct_raw = _calc_delta_pct(prev_lp, cur_lp)  # dein vorhandener %-Helper
+    delta_pct = abs(delta_pct_raw)
+
+    if delta_pct >= LIQ_CFG["delta_lp_pct"]:
+        arrow, word = _lp_dir_arrow(prev_lp, cur_lp)
+        # absolute Änderung in SOL
+        delta_abs = cur_lp - prev_lp
+        sign = "+" if delta_abs >= 0 else ""
+        # Beispiel:  LP ↑ +12% (+345.7 SOL)
+        msgs.append(f"LP {arrow} {_fmt_pct(delta_pct)} ({sign}{delta_abs:.1f} SOL)")
+
+    return (len(msgs) > 0, msgs)
+
 
 
 async def liq_check_watchlist_once() -> dict:
@@ -3634,10 +3660,11 @@ async def liq_check_watchlist_once() -> dict:
                 # Alerts (Δrefs / ΔLP%)
                 do_alert, msg = _liq_should_alert(cur, prev)
                 if do_alert:
-                    alerted.append((m, "; ".join(msg)))
                     nm  = (cur.get("name") or (m[:6] + "…"))
                     url = (cur.get("ds_url") or f"https://dexscreener.com/solana/{m}")
-                    alert_lines.append(f"- {nm} ({m[:6]}…) {'; '.join(msg)}  {url}")
+                    # "msg" kommt schon mit Richtungs-Pfeil aus _liq_should_alert()
+                    alert_lines.append(f"- {nm} ({m[:6]}…) " + "; ".join(msg) + f"\n{url}")
+                    alerted.append((m, "; ".join(msg)))     
             except Exception as e:
                 lines.append(f"• {mint[:6]}… error: {e}")
 
