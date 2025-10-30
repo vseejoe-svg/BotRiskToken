@@ -5172,212 +5172,213 @@ def _pnl_by_mint_from_csv() -> Dict[str, float]:
     # sauber auf 2 NK runden
     return {k: float(v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)) for k, v in agg.items()}
 
-#===============================================================================
-# Watchlist (nach Volumen sortiert + DexScreener-Link)
-#===============================================================================
-async def on_cb_remove_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback für '🗑 Remove' in /list_watch."""
+#===========================WATCHLIST====================================================
+# =========================
+# WATCHLIST: Add / Remove (Drop-in)
+# =========================
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import CommandHandler, CallbackQueryHandler
+import re
+
+# --- Helpers: Persistenz an LIQ_STATE koppeln (fallback: nur in WATCHLIST)
+def _watchlist_current_set() -> set:
+    try:
+        if isinstance(LIQ_STATE.get("watchlist"), list):
+            return set(LIQ_STATE["watchlist"])
+    except Exception:
+        pass
+    try:
+        return set(WATCHLIST)
+    except Exception:
+        return set()
+
+def _watchlist_set_persist(newset: set):
+    # Globales WATCHLIST-Array aktualisieren (in-place)
+    try:
+        WATCHLIST[:] = list(sorted(newset))
+    except Exception:
+        pass
+    # In LIQ_STATE speichern, wenn vorhanden
+    try:
+        if isinstance(LIQ_STATE, dict):
+            LIQ_STATE["watchlist"] = list(sorted(newset))
+            try:
+                _liq_save_state(LIQ_STATE)  # falls vorhanden
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def _mint_from_text(s: str) -> str | None:
+    """Extrahiert SOL-Mint aus plain Mint, Dexscreener-URL oder freiem Text."""
+    if not s:
+        return None
+    s = s.strip()
+    # dexscreener.com/solana/<mint>
+    m = re.search(r"dexscreener\.com/solana/([1-9A-HJ-NP-Za-km-z]{32,44})", s)
+    if m:
+        return m.group(1)
+    # blank mint (Base58)
+    if re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{32,44}", s):
+        return s
+    return None
+
+def _ds_url(mint: str) -> str:
+    return f"https://dexscreener.com/solana/{mint}"
+
+def _short_mint(m: str) -> str:
+    return (m[:6] + "…") if m else "n/a"
+
+# --- /add_watch <mint|dexscreener-url>
+async def cmd_add_watch(update, context):
+    if not guard(update):
+        return
+    args = context.args or []
+    if not args:
+        return await send(update, "Nutzung: /add_watch <mint|dexscreener-url>")
+    mint = _mint_from_text(" ".join(args))
+    if not mint:
+        return await send(update, "Konnte keine gültige SOL-Mint erkennen.")
+    s = _watchlist_current_set()
+    if mint in s:
+        return await send(update, f"Schon auf der Watchlist: {_short_mint(mint)}")
+    s.add(mint)
+    _watchlist_set_persist(s)
+    # optional Name aus Pair holen
+    name = _short_mint(mint)
+    try:
+        p = _aw_extract_best_pair(mint)
+        if p:
+            base = (p.get("baseToken") or {})
+            name = (base.get("symbol") or base.get("name") or name).strip() or name
+    except Exception:
+        pass
+    await send(update, f"➕ Hinzugefügt: {name} ({_short_mint(mint)})\n{_ds_url(mint)}")
+
+# --- /remove_watch <mint|dexscreener-url>
+async def cmd_remove_watch(update, context):
+    if not guard(update):
+        return
+    args = context.args or []
+    if not args:
+        return await send(update, "Nutzung: /remove_watch <mint|dexscreener-url>")
+    mint = _mint_from_text(" ".join(args))
+    if not mint:
+        return await send(update, "Konnte keine gültige SOL-Mint erkennen.")
+    s = _watchlist_current_set()
+    if mint not in s:
+        return await send(update, f"Nicht auf der Watchlist: {_short_mint(mint)}")
+    s.remove(mint)
+    _watchlist_set_persist(s)
+    await send(update, f"🗑 Entfernt: {_short_mint(mint)}")
+
+# --- Inline-Remove aus der kompakten Watchlist
+async def cb_watchlist_buttons(update, context):
     q = update.callback_query
+    data = (q.data or "")
     try:
         await q.answer()
     except Exception:
         pass
 
-    data = (q.data or "")
-    if not data.startswith("rmw|"):
-        return
+    if data == "WL:REFRESH":
+        return await cmd_watchlist_compact(update, context)
+    elif data == "WL:CHART":
+        fn = globals().get("cmd_pnl_chart")
+        if callable(fn): return await fn(update, context)
+    elif data == "WL:CSV":
+        fn = globals().get("cmd_pnl_csv")
+        if callable(fn): return await fn(update, context)
+    elif data == "WL:CSVALL":
+        fn = globals().get("cmd_pnl_csv_all")
+        if callable(fn): return await fn(update, context)
+    elif data.startswith("WL:RM:"):
+        mint = data.split(":", 2)[2]
+        s = _watchlist_current_set()
+        if mint in s:
+            s.remove(mint); _watchlist_set_persist(s)
+            await send(update, f"🗑 Entfernt: {_short_mint(mint)}")
+        return await cmd_watchlist_compact(update, context)
 
-    mint = data.split("|", 1)[1].strip()
-
-    removed = False
-    if mint in WATCHLIST:
-        WATCHLIST.remove(mint)
-        removed = True
-        # <<< FIX: State freigeben, wenn keine offene Position vorhanden
-        if mint not in OPEN_POS:
-            _drop_mint_state(mint)
-
-    try:
-        await q.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
-
-    try:
-        name, _age = dexscreener_token_meta(mint)
-    except Exception:
-        name = mint[:6] + "…"
-
-    if removed:
-        await q.message.chat.send_message(f"🗑 Entfernt: {name} ({mint[:6]}…)")
-    else:
-        await q.message.chat.send_message(f"ℹ️ Bereits nicht mehr in Watchlist: {name} ({mint[:6]}…)")
-
-
-
-async def cmd_list_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Zeigt die Watchlist (nach 24h-Volumen absteigend) mit:
-      - Name als anklickbaren DexScreener-Link
-      - Alter (Pair-Erstellungszeit)
-      - FDV (mcap) und 24h-Volumen
-      - OPEN-Status (qty @ entry) falls Position existiert
-    """
+# --- Kompakte Watchlist AUSGABE (leicht angepasst: pro Zeile ein Remove-Button)
+async def cmd_watchlist_compact(update, context):
     if not guard(update):
         return
 
-    if not WATCHLIST:
-        return await send(update, "👀 Watchlist: -")
+    tokens = sorted(_watchlist_current_set())
+    if not tokens:
+        return await send(update, "Watchlist ist leer.")
 
-    # Formatter
-    def _fmt_usd(x: float) -> str:
+    # metriken einsammeln
+    rows = []
+    for mint in tokens:
         try:
-            return f"${int(x):,}"
+            meta = _watch_mint_metrics(mint)  # aus deinem vorherigen Modul
+            rows.append((mint, meta))
         except Exception:
-            try:
-                return f"${float(x):,.2f}"
-            except Exception:
-                return "$0"
+            rows.append((mint, {
+                "name": _short_mint(mint), "url": _ds_url(mint),
+                "age":"n/a", "mcap":0.0, "vol24":0.0, "tx":"n/a", "liq":0.0, "price":0.0
+            }))
 
-    def _age_from_pair(p: dict) -> str:
-        try:
-            ms = (p.get("pairCreatedAt") or p.get("createdAt") or p.get("poolCreatedAt") or 0)
-            return _fmt_age_from_ms(int(ms) if ms else 0)
-        except Exception:
-            return "n/a"
+    # sort by vol24 desc
+    rows.sort(key=lambda x: float((x[1] or {}).get("vol24", 0.0)), reverse=True)
 
-    # DS-Daten pro Mint (konkurrenzbegrenzt) holen
-    sem = asyncio.Semaphore(6)
+    # Text zusammenbauen
+    header = "📋 <b>Watchlist (nach Vol24)</b>\n"
+    body_lines = []
+    for mint, m in rows:
+        body_lines.append(
+            f"- <a href=\"{m['url']}\">{m['name']}</a> ({_short_mint(mint)})\n"
+            f"  • age={m['age']}  • mcap≈{_fmt_usd(m['mcap'])}  • vol24≈{_fmt_usd(m['vol24'])}  "
+            f"• tx={m['tx']}  • liq≈{_fmt_usd(m['liq'])}  • price={_fmt_usd(m['price']).replace('$','')}$"
+        )
+    text = header + "\n".join(body_lines)
 
-    async def _fetch_row(mint: str) -> Tuple[str, str, str, float, float]:
-        """
-        Rückgabe: (mint, html_name_link, age_txt, mcap_usd, vol24_usd)
-        """
-        async with sem:
-            # Defaults
-            default_name = mint[:6] + "…"
-            name = default_name
-            url = f"https://dexscreener.com/solana/{mint}"
-            age_txt = "n/a"
-            mcap_usd = 0.0
-            vol24_usd = 0.0
+    # Inline-Buttons: global & je Eintrag Remove
+    # (Telegram hat Limits; wir machen globale Buttons + optional pro-Item Remove in einem Extra-Post)
+    global_keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📈 Chart",      callback_data="WL:CHART"),
+            InlineKeyboardButton("📥 CSV",        callback_data="WL:CSV"),
+            InlineKeyboardButton("📦 CSV (ZIP)",  callback_data="WL:CSVALL"),
+        ],
+        [   InlineKeyboardButton("🔁 Refresh",    callback_data="WL:REFRESH") ]
+    ])
 
-            try:
-                js = _ds_get_json(f"https://api.dexscreener.com/tokens/v1/solana/{mint}", timeout=10)
-                pairs = js.get("pairs") if isinstance(js, dict) else []
-                best = _ds_pick_best_sol_pair(pairs) if pairs else None
-                if best:
-                    base = (best.get("baseToken") or {})
-                    sym  = (base.get("symbol") or "").strip()
-                    nm   = (base.get("name")   or "").strip()
-                    name = sym or nm or name
-                    url  = best.get("url") or url
-                    age_txt = _age_from_pair(best)
-                    try:
-                        vol24_usd = float(((best.get("volume") or {}).get("h24") or 0.0))
-                    except Exception:
-                        vol24_usd = 0.0
-                    try:
-                        mcap_usd = float(best.get("fdv") or 0.0)
-                    except Exception:
-                        mcap_usd = 0.0
-            except Exception:
-                # keine Netzwerkausgabe/Send hier – nur Fallbacks
-                pass
+    msg = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        reply_markup=global_keyboard,
+        parse_mode="HTML",
+        disable_web_page_preview=True
+    )
 
-            # Zusätzlicher Fallback nur für Name/Alter
-            if name == default_name or age_txt == "n/a":
-                try:
-                    nm2, ag2 = dexscreener_token_meta(mint)
-                    if name == default_name and nm2:
-                        name = nm2
-                    if age_txt == "n/a" and ag2:
-                        age_txt = ag2
-                except Exception:
-                    pass
-
-            html_link = f"<a href='{url}'>{name}</a>"
-            return (mint, html_link, age_txt, mcap_usd, vol24_usd)
-
-    # Daten holen
-    tasks = [asyncio.create_task(_fetch_row(m)) for m in WATCHLIST]
-    results = await asyncio.gather(*tasks, return_exceptions=False)
-
-    # Sortierung: Volumen 24h absteigend
-    results.sort(key=lambda r: (r[4] or 0.0), reverse=True)
-
-    # Kopfzeile
+    # Optional: kompaktes Remove-Panel (spamt nicht die Hauptliste voll)
     try:
-        await update.effective_chat.send_message(
-            "👀 Watchlist (nach 24h-Volumen absteigend):",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-
-    # Ausgabe pro Token + Buttons
-    for (mint, html_name_link, age_txt, mcap_usd, vol24_usd) in results:
-        # OPEN-Status
-        pos = OPEN_POS.get(mint)
-        open_txt = ""
-        if pos and getattr(pos, "qty", 0.0) > 0:
-            try:
-                open_txt = f" • <b>OPEN</b> qty={pos.qty:.6f} @ {pos.entry_price:.6f}"
-            except Exception:
-                open_txt = " • <b>OPEN</b>"
-
-        text = (
-            f"- {html_name_link} ({mint[:6]}…)\n"
-            f"  • age={age_txt}  • mcap≈{_fmt_usd(mcap_usd)}  • vol24≈{_fmt_usd(vol24_usd)}{open_txt}"
-        )
-
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🗑 Remove", callback_data=f"rmw|{mint}")],
-            [InlineKeyboardButton("DexScreener", url=f"https://dexscreener.com/solana/{mint}")]
-        ])
-
-        try:
-            await update.effective_chat.send_message(
-                text,
-                reply_markup=kb,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
+        rm_buttons = []
+        row = []
+        for mint, m in rows[:25]:  # Telegram-Callbackdata-Limit beachten; 25 reicht i.d.R.
+            label = f"🗑 {_short_mint(mint)}"
+            row.append(InlineKeyboardButton(label, callback_data=f"WL:RM:{mint}"))
+            if len(row) == 3:
+                rm_buttons.append(row); row = []
+        if row: rm_buttons.append(row)
+        if rm_buttons:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="Schnell entfernen:",
+                reply_markup=InlineKeyboardMarkup(rm_buttons)
             )
-        except Exception:
-            # letzte, minimalistische Fallback-Ausgabe
-            try:
-                await send(
-                    update,
-                    f"{mint[:6]}…\n age={age_txt}  mcap≈{_fmt_usd(mcap_usd)}  vol24≈{_fmt_usd(vol24_usd)}{open_txt}\n"
-                    f"https://dexscreener.com/solana/{mint}"
-                )
-            except Exception:
-                pass
+    except Exception:
+        pass
 
+# --- Registrierung an deinem App-Setup
+# app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
+# app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
+# app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
+# app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|CHART|CSV|CSVALL|RM:.+)$"))
 
-#===============================================================================
-
-async def cmd_add_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not guard(update): return
-    if not context.args: return await send(update,"/add_watch <MINT>")
-    m=context.args[0].strip()
-    if m not in WATCHLIST: WATCHLIST.append(m)
-    await send(update, f"✅ hinzugefügt: {m}")
-#===============================================================================
-
-async def cmd_remove_watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not guard(update):
-        return
-    if not context.args:
-        return await send(update, "/remove_watch <MINT>")
-    m = context.args[0].strip()
-    if m in WATCHLIST:
-        WATCHLIST.remove(m)
-        # <<< FIX: State freigeben, falls keine offene Position
-        if m not in OPEN_POS:
-            _drop_mint_state(m)
-        await send(update, f"🗑️ entfernt: {m}")
-    else:
-        await send(update, f"ℹ️ nicht in Watchlist: {m}")
 
 #===============================================================================
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6177,9 +6178,6 @@ async def build_app():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).build()
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("status",       cmd_status))
-    app.add_handler(CommandHandler("list_watch",   cmd_list_watch))
-    app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
-    app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
     app.add_handler(CommandHandler("open_trades",  cmd_open_trades))
     app.add_handler(CommandHandler("buy",          cmd_buy))
     app.add_handler(CommandHandler("sell_all",     cmd_sell_all))
@@ -6223,6 +6221,10 @@ async def build_app():
     app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
     app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
     app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
+    app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
+    app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
+    app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
+    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|CHART|CSV|CSVALL|RM:.+)$"))
     return app
 
 POLLING_STARTED = False
