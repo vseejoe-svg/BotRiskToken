@@ -2558,8 +2558,7 @@ async def sell_all(mint: str) -> dict:
     )
     return {"sig": sig, "status": status, "res": send_res, "realized_usd": realized}
 
-#=================================================================================================
-
+#====================================== START PNL ===========================================================
 # =========================
 # PNL MODULE (Drop-in)
 # =========================
@@ -2600,16 +2599,25 @@ def _parse_offset_hhmm(val: str) -> float:
     return sign * float(v)
 
 def _env_utc_offset_hours() -> float:
+    # 0) Explizit: ALLOWED_HOURS_TZ_OFFSET_MIN (Offset in Minuten, kann negativ sein)
+    off_min = os.environ.get("ALLOWED_HOURS_TZ_OFFSET_MIN")
+    if off_min not in (None, ""):
+        try:
+            return float(int(off_min) / 60.0)
+        except Exception:
+            pass
+
     # 1) TZ-Name (Europe/Berlin, UTC, Asia/Dubai, ...)
     tz_env = os.environ.get("AUTO_WATCH_TZ") or os.environ.get("BOT_TZ") or os.environ.get("TZ")
     if tz_env and any(c.isalpha() for c in tz_env):
         try:
-            from zoneinfo import ZoneInfo  # Py>=3.9
+            from zoneinfo import ZoneInfo
             tz = ZoneInfo(tz_env)
             off = (dt.datetime.now(tz).utcoffset() or dt.timedelta(0)).total_seconds() / 3600.0
             return float(off)
         except Exception:
             pass
+
     # 2) Direkter Offset (+02:00, -5, +5.5, ...)
     off_env = (
         os.environ.get("AUTO_WATCH_UTC_OFFSET")
@@ -2622,7 +2630,9 @@ def _env_utc_offset_hours() -> float:
             return _parse_offset_hhmm(off_env)
         except Exception:
             pass
-    return 0.0  # Default UTC
+
+    return 0.0  # Default: UTC
+
 
 def _utc_boundaries_for_day_and_week() -> tuple[int, int]:
     """
@@ -2773,7 +2783,7 @@ async def _pnl_snapshot_text() -> str:
         hr = (s["wins"] / max(1, (s["wins"] + s["losses"])) * 100.0)
         return (
             f"• {label}:  {s['wins']} | {s['losses']} | {s['flat']}  | "
-            f"Hit‑Rate: {hr:.1f}%  | Tokens: {tok_count}"
+            f"Hit-Rate: {hr:.1f}%  | Tokens: {tok_count}"
         )
 
     lines = [
@@ -2784,7 +2794,7 @@ async def _pnl_snapshot_text() -> str:
         f"• Total: {t_sum:+,.2f} USD",
         f"• Unrealized (Open): {unreal_total:+,.2f} USD",
         "",
-        "🎯 Trigger‑Zähler (TP/SL/TSL)",
+        "🎯 Trigger-Zähler (TP/SL/TSL)",
         f"• Day:   TP1 {d_cnt['TP1']} | TP2 {d_cnt['TP2']} | SL {d_cnt['SL']} | TSL {d_cnt['TSL']}",
         f"• Week:  TP1 {w_cnt['TP1']} | TP2 {w_cnt['TP2']} | SL {w_cnt['SL']} | TSL {w_cnt['TSL']}",
         f"• Total: TP1 {t_cnt['TP1']} | TP2 {t_cnt['TP2']} | SL {t_cnt['SL']} | TSL {t_cnt['TSL']}",
@@ -2794,7 +2804,7 @@ async def _pnl_snapshot_text() -> str:
         f"• Week:  {-w_stats['mdd']:+,.2f} USD",
         f"• Total: {-t_stats['mdd']:+,.2f} USD",
         "",
-        "📋 Trade‑Stats",
+        "📋 Trade-Stats",
         _fmt_stats("Day  (W|L|F)", d_stats, d_tokens),
         _fmt_stats("Week (W|L|F)", w_stats, w_tokens),
         _fmt_stats("Total(W|L|F)", t_stats, t_tokens),
@@ -2922,7 +2932,11 @@ async def cmd_pnl_chart(update, context):
 
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
         fig.savefig(tmp.name)
-        plt.close(fig)
+        import pathlib
+        try:
+            plt.close(fig)
+        except Exception:
+            pass
 
         with open(tmp.name, "rb") as f:
             await context.bot.send_photo(
@@ -2941,7 +2955,7 @@ async def cmd_pnl_chart(update, context):
 # ----------------------
 # Hinweise zur Einbindung
 # ----------------------
-# 1) Commands registrieren (an deiner zentralen Stelle):
+# 1) Commands registrieren:
 #    app.add_handler(CommandHandler("pnl",         cmd_pnl))
 #    app.add_handler(CommandHandler("pnl_tail",    cmd_pnl_tail))
 #    app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
@@ -2949,18 +2963,19 @@ async def cmd_pnl_chart(update, context):
 #    app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
 #
 # 2) Auto-Push aktivieren (optional):
-#    setze ENV: PNL_AUTO_PUSH=1
-#    und rufe nach JEDEM SELL/TP/SL-Logeintrag:
+#    ENV setzen: PNL_AUTO_PUSH=1
+#    und nach JEDEM SELL/TP/SL-Logeintrag in deinen Order-Handlern:
 #       await _pnl_auto_push()
 #
 # 3) Zeitzone/UTC:
-#    - Setze z.B. AUTO_WATCH_TZ=Europe/Berlin  (oder BOT_TZ/TZ)
-#      oder   AUTO_WATCH_UTC_OFFSET=+2  (BOT_UTC_OFFSET/UTC_OFFSET/TZ_OFFSET)
+#    - AUTO_WATCH_TZ=Europe/Berlin  (oder BOT_TZ/TZ)
+#      oder AUTO_WATCH_UTC_OFFSET=+2  (bzw. BOT_UTC_OFFSET/UTC_OFFSET/TZ_OFFSET)
 #    - Fällt sonst auf UTC zurück.
 
 
 
-#=================================================================================================
+
+#====================================== END PNL ===========================================================
 # Strategy v1.6.3 (leicht erweitert mit Diag)
 # =========================
 def sma(series: deque, length: int) -> Optional[float]:
