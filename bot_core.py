@@ -1,4 +1,3 @@
-
 # bot_core.py
 # -----------------------------------------------------------
 # Telegram-Trading-Bot für Solana:
@@ -3408,124 +3407,21 @@ async def cmd_auto_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await send(update, "\n".join(lines))
 #===============================================================================
-# modules/liquidity.py
-from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from typing import Iterable, List, Tuple
-
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
-
-
-# ----------------------------
-# Datenmodell und Kernlogik
-# ----------------------------
-
-@dataclass
-class CashMovement:
-    when: date                 # Datum der Zahlung
-    amount: float              # + Zufluss, - Abfluss
-    label: str = ""            # optionale Beschreibung
-
-def _load_movements(context: ContextTypes.DEFAULT_TYPE) -> List[CashMovement]:
-    """
-    >>> WICHTIG: Ersetze diese Funktion bei Bedarf durch deinen DB-/API-Zugriff. <<<
-    Aktuell liest sie Bewegungen aus context.bot_data["cash_movements"].
-    Erwartetes Format:
-      [{"when": "2025-10-31", "amount": -800, "label": "Miete"}, ...]
-    """
-    raw = context.bot_data.get("cash_movements", [])
-    out: List[CashMovement] = []
-    for item in raw:
-        when = datetime.strptime(item["when"], "%Y-%m-%d").date()
-        out.append(CashMovement(when=when, amount=float(item["amount"]), label=item.get("label", "")))
-    return out
-
-def _compute_liquidity(
-    as_of: date,
-    horizon_days: int,
-    opening_balance: float,
-    movements: Iterable[CashMovement],
-) -> Tuple[float, float, List[CashMovement]]:
-    """
-    Berechnet den Netto‑Cashflow und Endsaldo über den Horizont
-    und gibt die betroffenen Bewegungen (chronologisch) zurück.
-    """
-    horizon_end = as_of + timedelta(days=horizon_days)
-    future = [m for m in movements if as_of <= m.when <= horizon_end]
-    net = sum(m.amount for m in future)
-    closing = opening_balance + net
-    future_sorted = sorted(future, key=lambda m: m.when)
-    return net, closing, future_sorted
-
-
-# ----------------------------
-# Telegram-Command
-# ----------------------------
-
-async def cmd_check_liq(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    /liq [horizon_days] [opening_balance]
-    Beispiel: /liq 30 2500
-    - horizon_days: Prognosehorizont in Tagen (Default 30)
-    - opening_balance: Startsaldo (Default: bot_data['opening_balance'] oder 0)
-    Bewegungen werden aus bot_data['cash_movements'] geladen (siehe _load_movements).
-    """
-    # Eingaben robust parsen
+async def cmd_check_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not guard(update): return
+    if not context.args:
+        return await send(update, "Nutzung: /check_liq <MINT>")
+    mint = context.args[0].strip()
     try:
-        horizon = int(context.args[0]) if context.args else 30
-    except ValueError:
-        horizon = 30
-
-    try:
-        opening = (
-            float(context.args[1]) if len(context.args) > 1
-            else float(context.bot_data.get("opening_balance", 0.0))
-        )
-    except ValueError:
-        opening = float(context.bot_data.get("opening_balance", 0.0))
-
-    today = date.today()
-    movements = _load_movements(context)
-    net, closing, future = _compute_liquidity(today, horizon, opening, movements)
-
-    # Schön formatierte Ausgabe (europäische Zahlendarstellung)
-    def eur(x: float) -> str:
-        s = f"{x:,.2f} €"
-        return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-    lines = [
-        f"<b>Liquidität</b> – heute {today:%d.%m.%Y}",
-        f"Horizont: {horizon} Tage",
-        f"Startsaldo: {eur(opening)}",
-        f"Netto‑Cashflow: {eur(net)}",
-        f"Erwarteter Endsaldo: <b>{eur(closing)}</b>",
-        "",
-        "<u>Bewegungen</u>:",
-    ]
-
-    if not future:
-        lines.append("Keine geplanten Bewegungen im Zeitraum.")
-    else:
-        for m in future:
-            sign = "➕" if m.amount >= 0 else "➖"
-            lines.append(f"{m.when:%d.%m.} {sign} {eur(m.amount)} – {m.label}")
-
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-# ----------------------------
-# Handler-Registrierung
-# ----------------------------
-
-def register_liquidity_handlers(app: Application) -> None:
-    """Einmal beim Bot-Setup aufrufen."""
-    app.add_handler(CommandHandler(["liq", "liquidity", "check_liq"], cmd_check_liq))
-
-
+        m, cur, prev = await _liq_check_one_and_report(mint)
+        line = _liq_format_line(m, cur, prev)
+        why = await _liq_maybe_prune(m, cur)
+        if why:
+            line += f"  → 🗑 {why}"
+        await send(update, "💧 Liquidity Check\n" + line)
+    except Exception as e:
+        await send(update, f"❌ check_liq Fehler: {e}")
 
 #===============================================================================
 # INDICATORS & IO (integriertes Zusatz-Modul)
