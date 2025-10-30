@@ -2821,6 +2821,23 @@ async def _pnl_auto_push():
         except Exception:
             pass
 
+async def cmd_pnl_tail(update, context):
+    if not guard(update):
+        return
+    rows = _load_trades_csv()
+    if not rows:
+        return await send(update, "Keine Einträge in trades_log.csv.")
+    last = rows[-10:]
+    out = ["📄 Letzte Trades (CSV):"]
+    for r in last:
+        out.append(
+            f"{r.get('ts_iso','?')}  {(r.get('side') or '?'):>10}  "
+            f"{(r.get('token') or r.get('mint') or '?'):<12}  "
+            f"realized={r.get('realized_usd','') or '-'}  sig={r.get('sig','')}"
+        )
+    await send(update, "\n".join(out))
+
+
 # ----------------------
 # Telegram Commands
 # ----------------------
