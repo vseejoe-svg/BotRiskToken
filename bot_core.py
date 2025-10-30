@@ -5377,8 +5377,8 @@ async def cmd_watchlist_compact(update, context):
     for mint, m in rows:
         body_lines.append(
             f"- <a href=\"{m['url']}\">{m['name']}</a> ({_short_mint(mint)})\n"
-            f"  • age={m['age']}  • mcap≈{_fmt_usd(m['mcap'])}  • vol24≈{_fmt_usd(m['vol24'])}  "
-            f"• tx={m['tx']}  • liq≈{_fmt_usd(m['liq'])}  • price={_fmt_usd(m['price']).replace('$','')}$"
+            f"  • age={m['age']}  • mcap≈{_fmt_usd_watch(m['mcap'])}  • vol24≈{_fmt_usd_watch(m['vol24'])}  "
+            f"• tx={m['tx']}  • liq≈{_fmt_usd_watch(m['liq'])}  • price={_fmt_usd_watch(m['price']).replace('$','')}$"
         )
     text = header + "\n".join(body_lines)
 
@@ -5560,8 +5560,8 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = s["name"]
             url  = s["url"]
             age  = s.get("age_txt", "n/a")
-            vol  = _fmt_usd_watch(s.get("vol24", 0.0))
-            mcap = _fmt_usd_watch(s.get("mcap", 0.0))
+            vol  = _fmt_usd(s.get("vol24", 0.0))
+            mcap = _fmt_usd(s.get("mcap", 0.0))
             pos  = OPEN_POS.get(mint)
             open_tag = f" • <b>OPEN</b> qty={pos.qty:.6f} @ {float(pos.entry_price or 0.0):.6f}" if (pos and pos.qty) else ""
             lines.append(f"{i:02d}. <a href=\"{url}\">{name}</a> ({mint[:6]}…)"
