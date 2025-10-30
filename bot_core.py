@@ -5292,20 +5292,23 @@ async def cb_watchlist_buttons(update, context):
 
     if data == "WL:REFRESH":
         return await cmd_watchlist_compact(update, context)
-    elif data == "WL:CHART":
-        fn = globals().get("cmd_pnl_chart")
-        if callable(fn): return await fn(update, context)
-    elif data == "WL:CSV":
-        fn = globals().get("cmd_pnl_csv")
-        if callable(fn): return await fn(update, context)
-    elif data == "WL:CSVALL":
-        fn = globals().get("cmd_pnl_csv_all")
-        if callable(fn): return await fn(update, context)
-    elif data.startswith("WL:RM:"):
+
+    if data.startswith("WL:RM:"):
         mint = data.split(":", 2)[2]
         s = _watchlist_current_set()
         if mint in s:
-            s.remove(mint); _watchlist_set_persist(s)
+            s.remove(mint)
+            _watchlist_set_persist(s)
+            await send(update, f"🗑 Entfernt: {_short_mint(mint)}")
+        return await cmd_watchlist_compact(update, context)
+
+    # Toleranz für alte Buttons (falls noch irgendwo vorhanden)
+    if data.startswith("rmv|"):
+        mint = data.split("|", 1)[1]
+        s = _watchlist_current_set()
+        if mint in s:
+            s.remove(mint)
+            _watchlist_set_persist(s)
             await send(update, f"🗑 Entfernt: {_short_mint(mint)}")
         return await cmd_watchlist_compact(update, context)
 
@@ -5356,58 +5359,51 @@ async def cmd_watchlist_compact(update, context):
     if not tokens:
         return await send(update, "Watchlist ist leer.")
 
-    # metriken einsammeln
+    # Metriken einsammeln
     rows = []
     for mint in tokens:
         try:
-            meta = _watch_mint_metrics(mint)  # aus deinem vorherigen Modul
+            meta = _watch_mint_metrics(mint)
             rows.append((mint, meta))
         except Exception:
             rows.append((mint, {
-                "name": _short_mint(mint), "url": _ds_url(mint),
+                "name": _short_mint(mint), "url": f"https://dexscreener.com/solana/{mint}",
                 "age":"n/a", "mcap":0.0, "vol24":0.0, "tx":"n/a", "liq":0.0, "price":0.0
             }))
 
-    # sort by vol24 desc
+    # nach Vol24 absteigend
     rows.sort(key=lambda x: float((x[1] or {}).get("vol24", 0.0)), reverse=True)
 
-    # Text zusammenbauen
+    # Text
     header = "📋 <b>Watchlist (nach Vol24)</b>\n"
     body_lines = []
     for mint, m in rows:
         body_lines.append(
-            f"- <a href=\"{m['url']}\">{m['name']}</a> ({_short_mint(mint)})\n"
-            f"  • age={m['age']}  • mcap≈{_fmt_usd_watch(m['mcap'])}  • vol24≈{_fmt_usd_watch(m['vol24'])}  "
-            f"• tx={m['tx']}  • liq≈{_fmt_usd_watch(m['liq'])}  • price={_fmt_usd_watch(m['price']).replace('$','')}$"
+            f"- <a href=\"{m.get('url')}\">{m.get('name')}</a> ({_short_mint(mint)})\n"
+            f"  • age={m.get('age','n/a')}  • mcap≈{_fmt_usd_watch(m.get('mcap'))}  "
+            f"• vol24≈{_fmt_usd_watch(m.get('vol24'))}  • tx={m.get('tx','n/a')}  "
+            f"• liq≈{_fmt_usd_watch(m.get('liq'))}  • price={_fmt_usd_watch(m.get('price'))}"
         )
     text = header + "\n".join(body_lines)
 
-    # Inline-Buttons: global & je Eintrag Remove
-    # (Telegram hat Limits; wir machen globale Buttons + optional pro-Item Remove in einem Extra-Post)
-    global_keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("📈 Chart",      callback_data="WL:CHART"),
-            InlineKeyboardButton("📥 CSV",        callback_data="WL:CSV"),
-            InlineKeyboardButton("📦 CSV (ZIP)",  callback_data="WL:CSVALL"),
-        ],
-        [   InlineKeyboardButton("🔁 Refresh",    callback_data="WL:REFRESH") ]
+    # Nur Refresh-Button
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔁 Refresh", callback_data="WL:REFRESH")]
     ])
 
-    msg = await context.bot.send_message(
+    await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text=text,
-        reply_markup=global_keyboard,
+        reply_markup=keyboard,
         parse_mode="HTML",
         disable_web_page_preview=True
     )
 
-    # Optional: kompaktes Remove-Panel (spamt nicht die Hauptliste voll)
+    # Separates Remove-Panel (kompakt)
     try:
-        rm_buttons = []
-        row = []
-        for mint, m in rows[:25]:  # Telegram-Callbackdata-Limit beachten; 25 reicht i.d.R.
-            label = f"🗑 {_short_mint(mint)}"
-            row.append(InlineKeyboardButton(label, callback_data=f"WL:RM:{mint}"))
+        rm_buttons, row = [], []
+        for mint, _ in rows[:25]:
+            row.append(InlineKeyboardButton(f"🗑 {_short_mint(mint)}", callback_data=f"WL:RM:{mint}"))
             if len(row) == 3:
                 rm_buttons.append(row); row = []
         if row: rm_buttons.append(row)
@@ -5419,6 +5415,7 @@ async def cmd_watchlist_compact(update, context):
             )
     except Exception:
         pass
+
 
 #===============================================================================
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6260,10 +6257,10 @@ async def build_app():
     app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
     app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
     app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
+    app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
     app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
     app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
-    app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
-    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|CHART|CSV|CSVALL|RM:.+)$"))
+    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|RM:.+)$"))
     return app
 
 POLLING_STARTED = False
