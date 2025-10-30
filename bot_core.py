@@ -1984,50 +1984,38 @@ async def sanity_check_token(
 # =========================
 # Liquidity-Check Command
 # =========================
-# --------------------------------------------------------------------
-# Manuelles Kommando: /check_liq <MINT>
-#   – zeigt eine Einzelzeile inkl. Pfeilen/Prozenten/Link
-# --------------------------------------------------------------------
-async def cmd_check_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # einfache Guard – kein Walrus nötig
+async def cmd_check_liqui(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """On-chain quick check: Raydium/Orca/Meteora refs + total pools (kein HTML)."""
     if not guard(update):
         return
-
-    if not context.args:
-        return await update.effective_chat.send_message(
-            "Nutzung: <code>/check_liq &lt;MINT&gt;</code>",
-            parse_mode=ParseMode.HTML
-        )
-
+    if not context or not context.args:
+        return await send(update, "Nutzung: /check_liq <MINT>")
     mint = context.args[0].strip()
+
+    await send(update, f"🔍 Prüfe Liquidity-Layer für {mint[:6]}…")
+
     try:
-        cur = await _measure_liquidity(mint)
-        prev = LIQ_STATE["mints"].get(mint) or {}
-        line = _format_liq_line(mint, cur, prev)
-        alert = _build_liq_alert_line(mint, cur, prev)
-        extra = f"\n{alert}" if alert else ""
+        refs = await _count_liquidity_refs_async(mint)
+        ray = refs.get("raydium_refs", 0)
+        orc = refs.get("orca_refs", 0)
+        met = refs.get("meteora_refs", 0)
+        tot = refs.get("total_liq_refs", 0)
 
-        # Snapshot sofort aktualisieren
-        LIQ_STATE["mints"][mint] = {
-            "last_ts": int(time.time()),
-            "last_lp_sol": float(cur.get("lp_sol", 0.0)),
-            "last_total_refs": int(cur.get("total_refs", 0)),
-            "last_r": int(cur.get("raydium_refs", 0)),
-            "last_o": int(cur.get("orca_refs", 0)),
-            "last_m": int(cur.get("meteora_refs", 0)),
-        }
-        _liq_save_state(LIQ_STATE)
+        ray_txt = "✅" if ray > 0 else "❌"
+        orc_txt = "✅" if orc > 0 else "❌"
+        met_txt = "✅" if met > 0 else "❌"
 
-        await update.effective_chat.send_message(
-            "💧 <b>Liquidity Check</b>\n" + line + (extra or ""),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        lines = [
+            f"🧩 <b>Liquidity-Layer (on-chain)</b>",
+            f"Raydium: {ray_txt} ({ray})",
+            f"Orca:    {orc_txt} ({orc})",
+            f"Meteora: {met_txt} ({met})",
+            f"Total Pools: <b>{tot}</b>",
+        ]
+        await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
     except Exception as e:
-        await update.effective_chat.send_message(
-            f"❌ check_liq Fehler: {escape(str(e))}",
-            parse_mode=ParseMode.HTML
-        )
+        await send(update, f"❌ Fehler bei Liquidity-Check: {e}")
+
 
 # ------------------------------------------------------------------------------
 # --- GMGN Preis-Fallbacks ---
