@@ -1,3 +1,4 @@
+
 # bot_core.py
 # -----------------------------------------------------------
 # Telegram-Trading-Bot für Solana:
@@ -95,7 +96,7 @@ if not HELIUS_API_KEY:
         pass
 # ===============================================================================
 # Globale Task-Handles (nur Background-Loops; KEIN Polling!)
-#APP = None
+APP = None
 AUTO_TASK: asyncio.Task | None = None          # z.B. dein auto_loop
 AUTOWATCH_TASK: asyncio.Task | None = None     # z.B. dein autowatch_loop
 AUTO_LIQ_TASK: asyncio.Task | None = None      # z.B. dein auto_liquidity_loop
@@ -1985,10 +1986,9 @@ async def sanity_check_token(
 # Liquidity-Check Command
 # =========================
 async def cmd_check_liqui(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """On-chain quick check: Raydium/Orca/Meteora refs + total pools (kein HTML)."""
     if not guard(update):
         return
-    if not context or not context.args:
+    if not context.args:
         return await send(update, "Nutzung: /check_liq <MINT>")
     mint = context.args[0].strip()
 
@@ -2006,17 +2006,17 @@ async def cmd_check_liqui(update: Update, context: ContextTypes.DEFAULT_TYPE):
         met_txt = "✅" if met > 0 else "❌"
 
         lines = [
-            f"🧩 <b>Liquidity-Layer (on-chain)</b>",
+            f"🧩 <b>Liquidity-Layer Check</b>",
             f"Raydium: {ray_txt} ({ray})",
-            f"Orca:    {orc_txt} ({orc})",
+            f"Orca: {orc_txt} ({orc})",
             f"Meteora: {met_txt} ({met})",
+            "",
             f"Total Pools: <b>{tot}</b>",
         ]
         await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
+
     except Exception as e:
         await send(update, f"❌ Fehler bei Liquidity-Check: {e}")
-
-
 # ------------------------------------------------------------------------------
 # --- GMGN Preis-Fallbacks ---
 def gmgn_get_route(token_in: str, token_out: str, in_amount: int,
@@ -2711,18 +2711,17 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
 
-    # CSV anhängen
+    # CSV anhängen (optional)
     if os.path.exists(PNL_CSV):
         try:
             with open(PNL_CSV, "rb") as f:
                 await update.effective_chat.send_document(
                     document=f,
                     filename=os.path.basename(PNL_CSV),
-                    caption="📄 Trades-PNL-CSV (SOL chain)"
+                    caption="📄 Auto_Trade_Bot/PNL-CSV (SOL chain)"
                 )
         except Exception:
             pass
-
 
 
 #=================================================================================================
@@ -3083,7 +3082,8 @@ CONFIG_1M = Config(
     pause_after_losses=3,
     pause_minutes=12,
     max_trades_per_hour=8,
-    allowed_hours_csv="2,3,4,5,10,11,12,13,14,15,16,23",
+    #allowed_hours_csv="2,3,4,5,10,11,12,13,14,15,16,23",
+    allowed_hours_csv="",
 )
 
 # =========================
@@ -3231,292 +3231,22 @@ async def _liq_check_one_and_report(mint: str) -> tuple[str, dict, dict]:
     _liq_save_state(LIQ_STATE)
     return mint, cur, prev
 
-from html import escape
-
-# --------------------------------------------------------------------
-# Helfer: Name + klickbarer Dexscreener-Link für ein Mint ermitteln
-# --------------------------------------------------------------------
-def _dexs_link_and_name(mint: str) -> tuple[str, str]:
-    """
-    Liefert (url, display_name).
-    Nutzt das liquideste Pair aus _aw_extract_best_pair; fallback: /solana/<mint>.
-    """
-    url = f"https://dexscreener.com/solana/{mint}"
-    name = f"{mint[:6]}…"
-    try:
-        p = _aw_extract_best_pair(mint)
-        if p:
-            url = p.get("url") or url
-            base = (p.get("baseToken") or {})
-            sym = (base.get("symbol") or "").strip()
-            nm  = (base.get("name") or "").strip()
-            name = sym or nm or name
-    except Exception:
-        pass
-    return (url, name)
-
-
-# --------------------------------------------------------------------
-# Helfer: Formatierung einer Report-Zeile mit klaren Deltas und Pfeilen
-# --------------------------------------------------------------------
-def _format_liq_line(mint: str, cur: dict, prev: dict) -> str:
-    """
-    Gibt eine HTML-formatierte Zeile zurück:
-      • <a href="...">NAME</a> (mint…) — Refs: 123 (▲45)  [R:2/O:0/M:1]  LP≈1 234.56 SOL (▲27%)
-    """
-    url, name = _dexs_link_and_name(mint)
-
-    refs = int(cur.get("total_refs", 0))
-    r = int(cur.get("raydium_refs", 0))
-    o = int(cur.get("orca_refs", 0))
-    m = int(cur.get("meteora_refs", 0))
-
+def _liq_format_line(mint: str, cur: dict, prev: dict) -> str:
+    refs = cur["total_refs"]; lp = cur["lp_sol"]
+    # Delta berechnen
     prev_refs = int(prev.get("last_total_refs") or 0)
     prev_lp   = float(prev.get("last_lp_sol") or 0.0)
-
-    lp = float(cur.get("lp_sol", 0.0))
-    delta_refs = refs - prev_refs
-    dd = _calc_delta_pct(prev_lp, lp)  # Prozent delta
-
-    # Refs-Delta (Pfeile)
-    if delta_refs > 0:
-        refs_delta_txt = f"▲{delta_refs}"
-    elif delta_refs < 0:
-        refs_delta_txt = f"▼{abs(delta_refs)}"
-    else:
-        refs_delta_txt = "0"
-
-    # LP-Delta in %
-    if prev_lp <= 0 and lp > 0:
-        lp_delta_txt = "▲∞%"
-    elif prev_lp <= 0 and lp <= 0:
-        lp_delta_txt = "—"
-    else:
-        sign = "▲" if dd > 0 else ("▼" if dd < 0 else "•")
-        lp_delta_txt = f"{sign}{abs(int(dd))}%"
-
-    # Liquidity-Quellen kurz zusammenfassen
-    dex_str = f"R:{r}/O:{o}/M:{m}"
-
-    # hübsches LP-Format in SOL
-    lp_txt = _fmt_lp(lp)
-
-    # HTML-Zeile (Klammern mit Mint-Prefix)
-    return (
-        f"• <a href=\"{escape(url)}\">{escape(name)}</a> "
-        f"(<code>{escape(mint[:6])}…</code>) — "
-        f"<b>Refs:</b> {refs} (<b>{refs_delta}</b>)  "
-        f"[{dex_str}]  <b>LP≈{lp_txt} SOL</b> (<b>{lp_delta}</b>)"
-    ).replace("{refs_delta}", refs_delta_txt).replace("{lp_delta}", lp_delta_txt)
-
-
-# --------------------------------------------------------------------
-# Helfer: Alert-Zeile bauen (steigend/fallend)
-# --------------------------------------------------------------------
-def _build_liq_alert_line(mint: str, cur: dict, prev: dict) -> str | None:
-    """
-    Liefert eine kompakte Alert-Zeile inkl. Richtungspfeil und Prozentsatz,
-    oder None, wenn kein Alert-Trigger erfüllt.
-    """
-    url, name = _dexs_link_and_name(mint)
-
-    refs = int(cur.get("total_refs", 0))
-    prev_refs = int(prev.get("last_total_refs") or 0)
-    lp = float(cur.get("lp_sol", 0.0))
-    prev_lp = float(prev.get("last_lp_sol") or 0.0)
-
     d_refs = refs - prev_refs
     d_lp_pct = _calc_delta_pct(prev_lp, lp)
-
-    trig_refs = abs(d_refs) >= LIQ_CFG.get("delta_refs", 2)
-    trig_lp   = abs(d_lp_pct) >= float(LIQ_CFG.get("delta_lp_pct", 30))
-
-    if not (trig_refs or trig_lp):
-        return None
-
-    # Richtungspfeile + Format
-    if d_refs > 0:
-        refs_part = f"Refs ▲{d_refs}"
-        ref_emoji = "🟢"
-    elif d_refs < 0:
-        refs_part = f"Refs ▼{abs(d_refs)}"
-        ref_emoji = "🔻"
-    else:
-        refs_part = "Refs 0"
-        ref_emoji = "⚠️"
-
-    if prev_lp <= 0 and lp > 0:
-        lp_part = "LP ▲∞%"
-        lp_emoji = "🟢"
-    elif prev_lp > 0:
-        sign = "▲" if d_lp_pct > 0 else ("▼" if d_lp_pct < 0 else "•")
-        lp_part = f"LP {sign}{abs(int(d_lp_pct))}%"
-        lp_emoji = "🟢" if d_lp_pct > 0 else ("🔻" if d_lp_pct < 0 else "⚠️")
-    else:
-        lp_part = "LP —"
-        lp_emoji = "⚠️"
-
-    # Gesamtrichtung nach „stärkerem“ Signal
-    lead_emoji = ref_emoji if abs(d_refs) >= abs(d_lp_pct) else lp_emoji
-    return f"{lead_emoji} <a href=\"{escape(url)}\">{escape(name)}</a> (<code>{escape(mint[:6])}…</code>): {refs_part}; {lp_part}"
-
-
-# --------------------------------------------------------------------
-# Liquidity-Check (für Auto-Loop und manuell)
-# --------------------------------------------------------------------
-async def liq_check_watchlist_once() -> dict:
-    """
-    Check über aktuelle WATCHLIST (+ optional Observe aus AW_STATE) mit:
-      • hübsch formatiertem Report (HTML, klickbare Links),
-      • Alert-Zusammenfassung inkl. Richtungspfeilen,
-      • optionalem Pruning & Status-Zwischenstand.
-    Nutzt weiterhin LIQ_STATE (persistente Snapshots).
-    """
-    global APP, ALLOWED_CHAT_ID
-
-    # Tokenmenge aufbauen
-    incl_obs = (os.environ.get("LIQ_INCLUDE_OBSERVE", "1").strip().lower()
-                in ("1", "true", "yes", "on"))
-    observe_mints = set((AW_STATE.get("observed") or {}).keys())
-    tokens = list(set(WATCHLIST) | (observe_mints if incl_obs else set()))
-
-    if not tokens:
-        return {"n": 0, "added": [], "pruned": [], "alerted": []}
-
-    added: list[tuple[str, str]] = []
-    pruned: list[tuple[str, str]] = []
-    alerted: list[tuple[str, str]] = []
-    lines: list[str] = []
-
-    # Kopfzeile
-    hdr = (
-        "💧 <b>Liquidity Report</b>\n"
-        f"• Soft gates: min_lp≥{_fmt_lp(LIQ_CFG['min_lp_sol'])} SOL, "
-        f"min_total_refs≥{LIQ_CFG['min_total_refs']}  |  "
-        f"Alert Δrefs≥{LIQ_CFG['delta_refs']} / ΔLP≥{int(LIQ_CFG['delta_lp_pct'])}%\n"
-    )
-    lines.append(hdr)
-
-    # Hauptliste
-    for mint in sorted(tokens):
-        try:
-            cur = await _measure_liquidity(mint)
-        except Exception as e:
-            # Messfehler robust überspringen
-            cur = {"raydium_refs": 0, "orca_refs": 0, "meteora_refs": 0, "total_refs": 0, "lp_sol": 0.0}
-
-        prev = LIQ_STATE["mints"].get(mint) or {}
-        # Formatierte Report-Zeile
-        try:
-            pretty = _format_liq_line(mint, cur, prev)
-        except Exception:
-            # Defensive Fallback
-            pretty = f"• {mint[:6]}… Refs={cur.get('total_refs',0)} LP≈{_fmt_lp(cur.get('lp_sol',0))} SOL"
-
-        lines.append(pretty)
-
-        # Alerts sammeln
-        alert_line = _build_liq_alert_line(mint, cur, prev)
-        if alert_line:
-            alerted.append((mint, alert_line))
-
-        # optionales Pruning (no pools)
-        why = await _liq_maybe_prune(mint, cur)
-        if why:
-            pruned.append((mint, why))
-
-        # Snapshot aktualisieren
-        LIQ_STATE["mints"][mint] = {
-            "last_ts": int(time.time()),
-            "last_lp_sol": float(cur.get("lp_sol", 0.0)),
-            "last_total_refs": int(cur.get("total_refs", 0)),
-            "last_r": int(cur.get("raydium_refs", 0)),
-            "last_o": int(cur.get("orca_refs", 0)),
-            "last_m": int(cur.get("meteora_refs", 0)),
-        }
-
-    # Persistieren
-    LIQ_STATE["last_run_ts"] = int(time.time())
-    _liq_save_state(LIQ_STATE)
-
-    # Hauptreport senden (HTML, klickbare Links)
-    if APP:
-        try:
-            await APP.bot.send_message(
-                chat_id=ALLOWED_CHAT_ID,
-                text="\n".join(lines),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            # Fallback ohne HTML
-            await tg_post("\n".join(escape(l) for l in lines))
-
-    # Alerts separat (falls vorhanden)
-    if alerted and APP:
-        alert_lines = ["⚠️ <b>Liquidity Alerts</b>"]
-        for _mint, al in alerted[:20]:
-            alert_lines.append(f"• {al}")
-        try:
-            await APP.bot.send_message(
-                chat_id=ALLOWED_CHAT_ID,
-                text="\n".join(alert_lines),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            await tg_post("\n".join(alert_lines))
-
-    # Rückgabe wie gehabt
-    return {
-        "n": len(tokens),
-        "added": added,
-        "pruned": pruned,
-        "alerted": [(m, a) for m, a in alerted],
-    }
-
-
-# --------------------------------------------------------------------
-# Manuelles Kommando: /check_liq <MINT>
-#   – zeigt eine Einzelzeile inkl. Pfeilen/Prozenten/Link
-# --------------------------------------------------------------------
-async def cmd_check_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not perk := guard(update):
-        return
-
-    if not context.args:
-        return await update.effective_chat.send_message(
-            "Nutzung: <code>/check_liq &lt;MINT&gt;</code>",
-            parse_mode=ParseMode.HTML
-        )
-
-    mint = context.args[0].strip()
-    try:
-        cur = await _measure_liquidity(mint)
-        prev = LIQ_STATE["mints"].get(mint) or {}
-        line = _format_liq_line(mint, cur, prev)
-        alert = _build_liq_alert_line(mint, cur, prev)
-        extra = f"\n{alert}" if alert else ""
-        # nach dem Senden optional sofort persistieren
-        LIQ_STATE["mints"][mint] = {
-            "last_ts": int(time.time()),
-            "last_lp_sol": float(cur.get("lp_sol", 0.0)),
-            "last_total_refs": int(cur.get("total_refs", 0)),
-            "last_r": int(cur.get("raydium_refs", 0)),
-            "last_o": int(cur.get("orca_refs", 0)),
-            "last_m": int(cur.get("meteora_refs", 0)),
-        }
-        _liq_save_state(LIQ_STATE)
-
-        await update.effective_chat.send_message(
-            "💧 <b>Liquidity Check</b>\n" + line + ("\n" if extra else "") + extra,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
-    except Exception as e:
-        await update.effective_chat.send_message(f"❌ check_liq Fehler: {escape(str(e))}", parse_mode=ParseMode.HTML)
-
-
+    # Icons
+    ico_r = "✅" if cur["raydium_refs"]>0 else "❌"
+    ico_o = "✅" if cur["orca_refs"]>0    else "❌"
+    ico_m = "✅" if cur["meteora_refs"]>0 else "❌"
+    # Delta-Text
+    d_refs_txt = f"{'+' if d_refs>=0 else ''}{d_refs}"
+    d_lp_txt   = f"{'+' if d_lp_pct>=0 else ''}{int(d_lp_pct)}%"
+    return (f"{mint[:6]}…  Refs={refs} ({ico_r}R {ico_o}O {ico_m}M, Δ={d_refs_txt})  "
+            f"LP≈{_fmt_lp(lp)} SOL (Δ={d_lp_txt})")
 
 async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
     if not LIQ_CFG["prune_empty"]:
@@ -3530,7 +3260,81 @@ async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
             _drop_mint_state(mint)
         return "pruned: no pools"
     return None
-    
+
+def _liq_should_alert(cur: dict, prev: dict) -> tuple[bool, list[str]]:
+    msgs = []
+    # Refs-Alert
+    prev_refs = int(prev.get("last_total_refs") or 0)
+    cur_refs  = int(cur.get("total_refs") or 0)
+    if abs(cur_refs - prev_refs) >= LIQ_CFG["delta_refs"]:
+        if cur_refs > prev_refs:
+            msgs.append(f"Refs +{cur_refs - prev_refs}")
+        else:
+            msgs.append(f"Refs {cur_refs - prev_refs}")
+    # LP-Alert
+    prev_lp = float(prev.get("last_lp_sol") or 0.0)
+    cur_lp  = float(cur.get("lp_sol") or 0.0)
+    delta_lp_pct = abs(_calc_delta_pct(prev_lp, cur_lp))
+    if delta_lp_pct >= LIQ_CFG["delta_lp_pct"]:
+        sign = "+" if cur_lp >= prev_lp else "−"
+        msgs.append(f"LP {sign}{int(delta_lp_pct)}%")
+    return (len(msgs)>0, msgs)
+
+async def liq_check_watchlist_once() -> dict:
+    """
+    Check über aktuelle WATCHLIST (optional inkl. Observe-Mints per ENV):
+      - misst Refs/LP
+      - optionales Pruning bei 0 Refs
+      - Alerts bei starken Änderungen
+      - Telegram-Summary
+    Rückgabe: {"n": <anzahl geprüfter tokens>, "added": [], "pruned": [(mint, reason)], "alerted": [(mint, msg)]}
+    """
+    async with LIQ_LOCK:
+        # --- Tokenmenge bilden: WATCHLIST (+ optional OBSERVE) ---
+        incl_obs = (os.environ.get("LIQ_INCLUDE_OBSERVE", "1").strip().lower() in ("1", "true", "yes", "on"))
+        observe_mints = set(AW_STATE.get("observed", {}).keys())
+        tokens = list(set(WATCHLIST) | (observe_mints if incl_obs else set()))
+
+        if not tokens:
+            return {"n": 0, "added": [], "pruned": [], "alerted": []}
+
+        lines = ["💧 Liquidity Report"]
+        added = []
+        pruned = []
+        alerted = []
+
+        for mint in tokens:
+            try:
+                m, cur, prev = await _liq_check_one_and_report(mint)
+                # formatierte Zeile anhängen
+                line = _liq_format_line(m, cur, prev)
+                lines.append("• " + line)
+
+                # optionales Pruning (no pools)
+                why = await _liq_maybe_prune(m, cur)
+                if why:
+                    pruned.append((m, why))
+                    lines[-1] += "  → 🗑 " + why
+
+                # Alerts (Δrefs / ΔLP%)
+                do_alert, msg = _liq_should_alert(cur, prev)
+                if do_alert:
+                    alerted.append((m, "; ".join(msg)))
+            except Exception as e:
+                lines.append(f"• {mint[:6]}… error: {e}")
+
+        # Timestamp aktualisieren & persistieren
+        LIQ_STATE["last_run_ts"] = int(time.time())
+        _liq_save_state(LIQ_STATE)
+
+        # Summary posten
+        await tg_post("\n".join(lines))
+        if alerted:
+            txt = "⚠️ Liquidity Alerts:\n" + "\n".join([f"- {m[:6]}… {t}" for m, t in alerted])
+            await tg_post(txt)
+
+        return {"n": len(tokens), "added": added, "pruned": pruned, "alerted": alerted}
+
 async def auto_liq_loop():
     while LIQ_CFG["enabled"]:
         try:
@@ -3603,6 +3407,22 @@ async def cmd_auto_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
         *_liq_snapshot_text(),
     ]
     await send(update, "\n".join(lines))
+#===============================================================================
+
+async def cmd_check_liq(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not guard(update): return
+    if not context.args:
+        return await send(update, "Nutzung: /check_liq <MINT>")
+    mint = context.args[0].strip()
+    try:
+        m, cur, prev = await _liq_check_one_and_report(mint)
+        line = _liq_format_line(m, cur, prev)
+        why = await _liq_maybe_prune(m, cur)
+        if why:
+            line += f"  → 🗑 {why}"
+        await send(update, "💧 Liquidity Check\n" + line)
+    except Exception as e:
+        await send(update, f"❌ check_liq Fehler: {e}")
 
 #===============================================================================
 # INDICATORS & IO (integriertes Zusatz-Modul)
@@ -3789,7 +3609,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wl = ", ".join(WATCHLIST) or "-"
 
     lines = [
-        f"🤖 <b>SwingBot v1.6.3 online</b>",
+        f"🤖 <b>Auto-Trade-BOT with Autowach for SOL chain</b>",
         f"Wallet: <code>{WALLET_PUBKEY}</code>",
         f"RPC: <code>{RPC_URL}</code> ({helius_txt})",
         f"Watchlist: {wl}",
