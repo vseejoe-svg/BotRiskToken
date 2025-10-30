@@ -3133,7 +3133,7 @@ class Config:
     pause_minutes: int = 10 # 15
     max_trades_per_hour: int = 30 # 24
     time_exit_bars: int = 60 # 900
-    allowed_hours_csv="2,3,4,5,10,11,12,13,14,15,16,23",
+    allowed_hours_csv: str = "2,3,4,5,10,11,12,13,14,15,16,23",
 
 @dataclass
 class State:
