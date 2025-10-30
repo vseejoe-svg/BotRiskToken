@@ -3911,55 +3911,121 @@ def update_indicators_and_debug(st: IndiState, candle: Dict[str, float], *, atr_
 
 def format_debug_line(mint: str, dbg: Dict[str, float], lookback_secs: int) -> str:
     return (f"🔎 {mint[:6]} px={dbg['px']:.6f} v5s≈{lookback_secs} | ATR={dbg['ATR']:.6f} ADX={dbg['ADX']:.1f} | vol_ok={'True' if dbg['vol_ok'] else 'False'}")
-#===============================================================================
-    
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+#============================START ===================================================
+def _collect_all_commands(app) -> list[str]:
     """
-    Start/Help: zeigt Schnellbefehle + vollständige Befehlsübersicht,
-    passend zu den in build_app() registrierten Commands.
+    Liest alle in der Application registrierten CommandHandler ein (Gruppe 0..n)
+    und liefert eine sortierte Liste der Befehlsnamen (ohne '/').
     """
+    cmds = set()
+    try:
+        for _, handlers in (app.handlers or {}).items():
+            for h in handlers:
+                # PTB v20+: CommandHandler hat 'commands' (set[str])
+                if hasattr(h, "commands") and h.commands:
+                    for c in h.commands:
+                        # .commands kann strings oder Objects enthalten; wir normalisieren
+                        cmds.add(str(c).lstrip("/"))
+    except Exception:
+        pass
+    return sorted(cmds)
+
+def _categorize_commands(cmds: list[str]) -> dict:
+    cats = {
+        "📊 PnL & Reporting": [],
+        "💧 Liquidity": [],
+        "🪙 Trading": [],
+        "🧰 System/Tools": [],
+        "🗂️ Sonstiges": [],
+    }
+    for c in cmds:
+        lc = c.lower()
+        if "pnl" in lc or "stats" in lc or "chart" in lc:
+            cats["📊 PnL & Reporting"].append(c)
+        elif "liq" in lc or "watch" in lc or "auto" in lc:
+            cats["💧 Liquidity"].append(c)
+        elif lc in {"buy","sell","close","open","tp","sl","cancel"} or any(k in lc for k in ["trade","order"]):
+            cats["🪙 Trading"].append(c)
+        elif lc in {"start","help","ping","status","version","info","config","settings"}:
+            cats["🧰 System/Tools"].append(c)
+        else:
+            cats["🗂️ Sonstiges"].append(c)
+    # Leere Kategorien entfernen
+    return {k:v for k,v in cats.items() if v}
+
+def _mini_pnl_line() -> str:
+    """
+    Kleine 'Grafik' direkt im Text: Day | Week | Total (Realized).
+    Nutzt die bereits vorhandenen PnL-Helfer.
+    """
+    try:
+        rows = _load_trades_csv()
+        ts_day0, ts_week = _utc_boundaries_for_day_and_week()
+        d_sum, _, _, _ = _aggregate_for_range(rows, ts_day0)
+        w_sum, _, _, _ = _aggregate_for_range(rows, ts_week)
+        t_sum, _, _, _ = _aggregate_for_range(rows, None)
+
+        def f(x):  # Pfeil + Wert
+            x = float(x)
+            arrow = "📈" if x >= 0 else "📉"
+            return f"{arrow}{x:+.2f}"
+
+        return f"Mini-PnL  Day {f(d_sum)} | Week {f(w_sum)} | Total {f(t_sum)}"
+    except Exception:
+        return "Mini-PnL  (noch keine Daten)"
+
+
+# /start – Übersicht mit Buttons und Mini-Grafik
+async def cmd_start(update, context):
     if not guard(update):
         return
 
-    helius_txt = "Helius" if is_helius_url(RPC_URL) else "Custom RPC"
+    # 1) Dynamisch alle Commands einsammeln & gruppieren
+    cmds = _collect_all_commands(context.application)
+    cats = _categorize_commands(cmds)
 
-    quick = " /dashboard  •  /pnl  •  /open_trades  •  /list_watch  •  /aw_status  •  /check_liq USDC "
-    wl = ", ".join(WATCHLIST) or "-"
-
+    # 2) Headline + Mini-PnL
     lines = [
-        f"🤖 <b>Auto-Trade-BOT with Autowach for SOL chain</b>",
-        f"Wallet: <code>{WALLET_PUBKEY}</code>",
-        f"RPC: <code>{RPC_URL}</code> ({helius_txt})",
-        f"Watchlist: {wl}",
+        "👋 Willkommen! Hier ist deine Übersicht.",
+        _mini_pnl_line(),
         "",
-        f"⚡ <b>Schnellbefehle</b>:<code>{quick}</code>",
-        "",
-        "— <b>Core</b>",
-        "<code>/boot</code> / <code>/shutdown</code> – Bot an/aus, <code>/diag_webhook</code>",
-        "<code>/status</code>, <code>/health</code>, <code>/diag</code>, <code>/dashboard</code>",
-        "<code>/debug on|off</code>, <code>/set_proxy &lt;url|off&gt;</code>",
-        "",
-        "— <b>Trading</b>",
-        "<code>/buy &lt;MINT&gt; [sol]</code>, <code>/sell_all &lt;MINT&gt;</code>",
-        "<code>/set_notional &lt;sol&gt;</code>, <code>/set_slippage &lt;pct&gt;</code>, <code>/set_fee &lt;SOL&gt;</code>",
-        "<code>/positions</code>, <code>/open_trades</code>, <code>/pnl</code>",
-        "<code>/chart &lt;MINT&gt; [bars]</code>",
-        "",
-        "— <b>Discovery &amp; Sanity</b>",
-        "<code>/scan_ds</code> [Flags], <code>/sanity &lt;MINT&gt;</code>",
-        "<code>/dsdiag</code>, <code>/dsraw</code>, <code>/ds_trending</code>, <code>/trending</code> [n [focus] [quote]]",
-        "",
-        "— <b>Auto-Watchlist</b>",
-        "<code>/autowatch on|off</code>, <code>/aw_status</code>, <code>/aw_config</code> [Flags], <code>/aw_now</code>, <code>/aw_observe</code>",
-        "",
-        "— <b>Watchlist</b>",
-        "<code>/list_watch</code>, <code>/add_watch &lt;MINT&gt;</code>, <code>/remove_watch &lt;MINT&gt;</code>",
-        "",
-        "— <b>Liquidity</b>",
-        "<code>/check_liq &lt;MINT&gt;</code>, <code>/auto_liq on|off</code>, <code>/liq_config</code> [Flags], <code>/check_liq_onchain &lt;MINT&gt;</code>",
+        "Verfügbare Befehle:",
     ]
 
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    # 3) Kategorien rendern
+    for title, items in cats.items():
+        pretty = " /".join(sorted(set(items)))
+        # kurze, „grafische“ Bulletpoints
+        lines.append(f"\n{title}\n• /" + pretty)
+
+    text = "\n".join(lines)
+
+    # 4) Buttons (häufig genutzte Actions)
+    keyboard_rows = []
+    keyboard_rows.append([
+        InlineKeyboardButton("📊 PnL",        callback_data="GO:/pnl"),
+        InlineKeyboardButton("📈 Chart",      callback_data="GO:/pnl_chart"),
+    ])
+    keyboard_rows.append([
+        InlineKeyboardButton("📥 CSV",        callback_data="GO:/pnl_csv"),
+        InlineKeyboardButton("📦 CSV (ZIP)",  callback_data="GO:/pnl_csv_all"),
+    ])
+    # Liquidity-Buttons nur anzeigen, wenn es passende Commands gibt
+    liq_cmds = ["/check_liq", "/liq_config", "/auto_liq", "/auto_liq_on", "/auto_liq_off"]
+    if any(c.strip("/") in cmds for c in [c.strip("/") for c in liq_cmds]):
+        keyboard_rows.append([
+            InlineKeyboardButton("💧 Liquidity", callback_data="GO:/check_liq"),
+            InlineKeyboardButton("⚙️ Liq Config", callback_data="GO:/liq_config"),
+        ])
+
+    keyboard = InlineKeyboardMarkup(keyboard_rows)
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        reply_markup=keyboard
+    )
+
 
 #===============================================================================
     
