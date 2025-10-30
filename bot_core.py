@@ -6262,11 +6262,9 @@ async def build_app():
     app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
     # Watchlist (kompakt) + Legacy‑Kompatibilität
     app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
-    app.add_handler(CommandHandler("list_watch",   cmd_watchlist_compact))  # Legacy alias
     app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
     app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
-    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|RM:.+)$"))
-    app.add_handler(CallbackQueryHandler(on_cb_remove_watch,  pattern=r"^rmw\|"))  # Legacy‑Buttons
+    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:
     return app
 
 POLLING_STARTED = False
