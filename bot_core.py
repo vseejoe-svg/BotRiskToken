@@ -6206,21 +6206,11 @@ async def cmd_diag_webhook(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 #===============================================================================
 # /boot & /shutdown
-#req = HTTPXRequest(http_version="1.1", connect_timeout=30.0, read_timeout=60.0, write_timeout=30.0, pool_timeout=30.0)
-
-# --- Konsolidierte, vollständige build_app() ---
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
-from telegram.request import HTTPXRequest
+req = HTTPXRequest(http_version="1.1", connect_timeout=30.0, read_timeout=60.0, write_timeout=30.0, pool_timeout=30.0)
 
 async def build_app():
-    req = HTTPXRequest(
-        http_version="1.1",
-        connect_timeout=30.0, read_timeout=60.0,
-        write_timeout=30.0,  pool_timeout=30.0
-    )
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).build()
-
-    # Core
+   # Core
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("status",       cmd_status))
     app.add_handler(CommandHandler("open_trades",  cmd_open_trades))
@@ -6233,12 +6223,10 @@ async def build_app():
     app.add_handler(CommandHandler("diag",         cmd_diag))
     app.add_handler(CommandHandler("debug",        cmd_debug))
     app.add_handler(CommandHandler("chart",        cmd_chart))
-
     # Boot/Stop/Health
     app.add_handler(CommandHandler("boot",         cmd_boot))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
     app.add_handler(CommandHandler("health",       cmd_health))
-
     # Discovery & Trending & Proxy
     app.add_handler(CommandHandler("scan_ds",      cmd_scan_ds))
     app.add_handler(CallbackQueryHandler(on_scan_add_callback, pattern=r"^scanadd\|"))
@@ -6247,10 +6235,8 @@ async def build_app():
     app.add_handler(CommandHandler("dsraw",        cmd_dsraw))
     app.add_handler(CommandHandler("ds_trending",  cmd_ds_trending))
     app.add_handler(CommandHandler("set_proxy",    cmd_set_proxy))
-
     # Sanity
     app.add_handler(CommandHandler("sanity",       cmd_sanity))
-
     # Auto‑Watchlist
     app.add_handler(CommandHandler("autowatch",    cmd_autowatch))
     app.add_handler(CommandHandler("aw_config",    cmd_aw_config))
@@ -6259,17 +6245,14 @@ async def build_app():
     app.add_handler(CommandHandler("aw_observe",   cmd_aw_observe))
     app.add_handler(CallbackQueryHandler(on_observe_add_callback,    pattern=r"^obsadd\|"))
     app.add_handler(CallbackQueryHandler(on_observe_remove_callback, pattern=r"^obsrm\|"))
-
     # Liquidity
     app.add_handler(CommandHandler("check_liq",         cmd_check_liq))
     app.add_handler(CommandHandler("check_liq_onchain", cmd_check_liqui))  # alias/zweiter Check
     app.add_handler(CommandHandler("auto_liq",          cmd_auto_liq))
     app.add_handler(CommandHandler("liq_config",        cmd_liq_config))
-
     # Dashboard & Webhook‑Diagnose
     app.add_handler(CommandHandler("dashboard",    cmd_dashboard))
     app.add_handler(CommandHandler("diag_webhook", cmd_diag_webhook))
-
     # PnL‑Erweiterungen
     app.add_handler(CommandHandler("pnl",          cmd_pnl))
     app.add_handler(CommandHandler("pnl_tail",     cmd_pnl_tail))
@@ -6277,7 +6260,6 @@ async def build_app():
     app.add_handler(CommandHandler("pnl_csv_all",  cmd_pnl_csv_all))
     app.add_handler(CommandHandler("pnl_chart",    cmd_pnl_chart))
     app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
-
     # Watchlist (kompakt) + Legacy‑Kompatibilität
     app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
     app.add_handler(CommandHandler("list_watch",   cmd_watchlist_compact))  # Legacy alias
@@ -6285,11 +6267,7 @@ async def build_app():
     app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
     app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|RM:.+)$"))
     app.add_handler(CallbackQueryHandler(on_cb_remove_watch,  pattern=r"^rmw\|"))  # Legacy‑Buttons
-
-    # Fehlerbehandlung
-    app.add_error_handler(_error_handler)
     return app
-
 
 POLLING_STARTED = False
 # =======================VERWENDUNG MIT RENDER ==============================================================
