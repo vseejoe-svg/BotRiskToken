@@ -5309,6 +5309,44 @@ async def cb_watchlist_buttons(update, context):
             await send(update, f"🗑 Entfernt: {_short_mint(mint)}")
         return await cmd_watchlist_compact(update, context)
 
+def _fmt_usd_watch(x) -> str:
+    """Kompakter USD-Formatter: 1.23k / 4.56M / 7.89B, inkl. Vorzeichen."""
+    try:
+        v = float(x or 0)
+    except Exception:
+        v = 0.0
+    sgn = "-" if v < 0 else ""
+    v = abs(v)
+    if v >= 1_000_000_000:
+        return f"{sgn}${v/1_000_000_000:.2f}B"
+    if v >= 1_000_000:
+        return f"{sgn}${v/1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"{sgn}${v/1_000:.2f}k"
+    return f"{sgn}${v:.2f}"
+
+def _fmt_tx(buys, sells) -> str:
+    try:
+        b = int(buys or 0); s = int(sells or 0)
+        return f"{b+s} (B{b}/S{s})"
+    except Exception:
+        return "n/a"
+
+def _fmt_age_from_ms(created_ms) -> str:
+    try:
+        ms = int(created_ms or 0)
+        if ms <= 0:
+            return "n/a"
+        now_ms = int(time.time() * 1000)
+        delta = max(0, now_ms - ms) / 1000.0
+        d = int(delta // 86400)
+        h = int((delta % 86400) // 3600)
+        if d >= 1:  return f"{d}d {h}h"
+        if h >= 1:  return f"{h}h {int((delta % 3600)//60)}m"
+        return f"{int((delta % 3600)//60)}m"
+    except Exception:
+        return "n/a"
+
 # --- Kompakte Watchlist AUSGABE (leicht angepasst: pro Zeile ein Remove-Button)
 async def cmd_watchlist_compact(update, context):
     if not guard(update):
@@ -5381,13 +5419,6 @@ async def cmd_watchlist_compact(update, context):
             )
     except Exception:
         pass
-
-# --- Registrierung an deinem App-Setup
-# app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
-# app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
-# app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
-# app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|CHART|CSV|CSVALL|RM:.+)$"))
-
 
 #===============================================================================
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5529,8 +5560,8 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = s["name"]
             url  = s["url"]
             age  = s.get("age_txt", "n/a")
-            vol  = _fmt_usd(s.get("vol24", 0.0))
-            mcap = _fmt_usd(s.get("mcap", 0.0))
+            vol  = _fmt_usd_watch(s.get("vol24", 0.0))
+            mcap = _fmt_usd_watch(s.get("mcap", 0.0))
             pos  = OPEN_POS.get(mint)
             open_tag = f" • <b>OPEN</b> qty={pos.qty:.6f} @ {float(pos.entry_price or 0.0):.6f}" if (pos and pos.qty) else ""
             lines.append(f"{i:02d}. <a href=\"{url}\">{name}</a> ({mint[:6]}…)"
