@@ -6192,7 +6192,6 @@ async def build_app():
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
     app.add_handler(CommandHandler("health",       cmd_health))
     app.add_handler(CommandHandler("chart",        cmd_chart))
-    app.add_handler(CallbackQueryHandler(on_cb_remove_watch, pattern=r"^rmw\|"))
     app.add_handler(CommandHandler("scan_ds", cmd_scan_ds))
     app.add_handler(CallbackQueryHandler(on_scan_add_callback, pattern=r"^scanadd\|"))
     app.add_handler(CommandHandler("dsdiag", cmd_dsdiag))
