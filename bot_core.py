@@ -36,6 +36,8 @@ from solders.signature import Signature as Sig
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
+from telegram.ext import CallbackQueryHandler
+
 # ===============================================================================
 import asyncio, os  # <-- falls oben noch nicht vorhanden
 import contextlib
@@ -2824,31 +2826,47 @@ async def _pnl_auto_push():
 # ----------------------
 
 # /pnl  -> Textübersicht
+# /pnl  -> Textübersicht (mit Buttons)
 async def cmd_pnl(update, context):
     if not guard(update):
         return
     try:
         text = await _pnl_snapshot_text()
-        await send(update, text)
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📈 Chart zeigen", callback_data="PNL:CHART"),
+                InlineKeyboardButton("📥 CSV laden",   callback_data="PNL:CSV"),
+            ],
+            [
+                InlineKeyboardButton("📦 CSV (ZIP)",   callback_data="PNL:CSVALL"),
+            ],
+        ])
+
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=text,
+            reply_markup=keyboard
+        )
     except Exception as e:
         await send(update, f"PNL-Fehler: {e}")
 
-# /pnl_tail  -> letzte CSV-Zeilen (Debug)
-async def cmd_pnl_tail(update, context):
-    if not guard(update):
-        return
-    rows = _load_trades_csv()
-    if not rows:
-        return await send(update, "Keine Einträge in trades_log.csv.")
-    last = rows[-10:]
-    out = ["📄 Letzte Trades (CSV):"]
-    for r in last:
-        out.append(
-            f"{r.get('ts_iso','?')}  {(r.get('side') or '?'):>10}  "
-            f"{(r.get('token') or r.get('mint') or '?'):<12}  "
-            f"realized={r.get('realized_usd','') or '-'}  sig={r.get('sig','')}"
-        )
-    await send(update, "\n".join(out))
+# Inline-Button Callback: Chart / CSV / ZIP
+async def cb_pnl_buttons(update, context):
+    q = update.callback_query
+    data = (q.data or "")
+    try:
+        await q.answer()
+    except Exception:
+        pass
+
+    # Damit guard(update) in den Commands funktioniert, den gleichen update weiterreichen
+    if data == "PNL:CHART":
+        return await cmd_pnl_chart(update, context)
+    elif data == "PNL:CSV":
+        return await cmd_pnl_csv(update, context)
+    elif data == "PNL:CSVALL":
+        return await cmd_pnl_csv_all(update, context)
 
 # /pnl_csv -> aktuelle CSV als Download
 async def cmd_pnl_csv(update, context):
@@ -2967,13 +2985,6 @@ async def cmd_pnl_chart(update, context):
 #    und nach JEDEM SELL/TP/SL-Logeintrag in deinen Order-Handlern:
 #       await _pnl_auto_push()
 #
-# 3) Zeitzone/UTC:
-#    - AUTO_WATCH_TZ=Europe/Berlin  (oder BOT_TZ/TZ)
-#      oder AUTO_WATCH_UTC_OFFSET=+2  (bzw. BOT_UTC_OFFSET/UTC_OFFSET/TZ_OFFSET)
-#    - Fällt sonst auf UTC zurück.
-
-
-
 
 #====================================== END PNL ===========================================================
 # Strategy v1.6.3 (leicht erweitert mit Diag)
@@ -6101,6 +6112,7 @@ async def build_app():
     app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
     app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
     app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
+    app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
     return app
 
 POLLING_STARTED = False
