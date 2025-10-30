@@ -3186,19 +3186,42 @@ async def _measure_liquidity(mint: str) -> dict:
     Liefert:
       {
         'raydium_refs': int, 'orca_refs': int, 'meteora_refs': int,
-        'total_refs': int, 'lp_sol': float
+        'total_refs': int, 'lp_sol': float,
+        'name': str, 'ds_url': str
       }
     """
     refs = await _count_liquidity_refs_async(mint)
     best = _aw_extract_best_pair(mint)
     lp_sol = _lp_sol_of_pair(best) if best else 0.0
+
+    # Token-Name + Dexscreener-URL (robust, mit Fallback)
+    name = (mint[:6] + "…")
+    url  = f"https://dexscreener.com/solana/{mint}"
+    try:
+        if best:
+            base = (best.get("baseToken") or {})
+            sym  = (base.get("symbol") or "").strip()
+            nm   = (base.get("name") or "").strip()
+            name = sym or nm or name
+            url  = (best.get("url") or url)
+        else:
+            nm, _ag = dexscreener_token_meta(mint)
+            if nm:
+                name = nm
+    except Exception:
+        # keep fallbacks
+        pass
+
     return {
         "raydium_refs": int(refs.get("raydium_refs",0)),
         "orca_refs":    int(refs.get("orca_refs",0)),
         "meteora_refs": int(refs.get("meteora_refs",0)),
         "total_refs":   int(refs.get("total_liq_refs",0)),
         "lp_sol":       float(lp_sol or 0.0),
+        "name":         name,
+        "ds_url":       url,
     }
+
 
 def _liq_snapshot_text() -> list[str]:
     return [
@@ -3231,21 +3254,29 @@ async def _liq_check_one_and_report(mint: str) -> tuple[str, dict, dict]:
     return mint, cur, prev
 
 def _liq_format_line(mint: str, cur: dict, prev: dict) -> str:
+    """
+    Formatierte Report-Zeile mit Tokenname und Dexscreener-Link + Richtungspfeil für LP.
+    """
     refs = cur["total_refs"]; lp = cur["lp_sol"]
     # Delta berechnen
     prev_refs = int(prev.get("last_total_refs") or 0)
     prev_lp   = float(prev.get("last_lp_sol") or 0.0)
     d_refs = refs - prev_refs
-    d_lp_pct = _calc_delta_pct(prev_lp, lp)
+    d_lp_pct_raw = _calc_delta_pct(prev_lp, lp)
     # Icons
     ico_r = "✅" if cur["raydium_refs"]>0 else "❌"
     ico_o = "✅" if cur["orca_refs"]>0    else "❌"
     ico_m = "✅" if cur["meteora_refs"]>0 else "❌"
     # Delta-Text
     d_refs_txt = f"{'+' if d_refs>=0 else ''}{d_refs}"
-    d_lp_txt   = f"{'+' if d_lp_pct>=0 else ''}{int(d_lp_pct)}%"
-    return (f"{mint[:6]}…  Refs={refs} ({ico_r}R {ico_o}O {ico_m}M, Δ={d_refs_txt})  "
-            f"LP≈{_fmt_lp(lp)} SOL (Δ={d_lp_txt})")
+    lp_dir = "📈" if d_lp_pct_raw >= 0 else "📉"
+    d_lp_txt   = f"{int(abs(d_lp_pct_raw))}%"
+    # Name + Link
+    name = (cur.get("name") or "").strip() or (mint[:6] + "…")
+    url  = (cur.get("ds_url") or f"https://dexscreener.com/solana/{mint}")
+    return (f"{name} ({mint[:6]}…)  Refs={refs} ({ico_r}R {ico_o}O {ico_m}M, Δ={d_refs_txt})  "
+            f"LP≈{_fmt_lp(lp)} SOL ({lp_dir} Δ={d_lp_txt})  {url}")
+
 
 async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
     if not LIQ_CFG["prune_empty"]:
@@ -3261,6 +3292,9 @@ async def _liq_maybe_prune(mint: str, cur: dict) -> Optional[str]:
     return None
 
 def _liq_should_alert(cur: dict, prev: dict) -> tuple[bool, list[str]]:
+    """
+    Liefert (should_alert, messages[]), wobei die LP-Änderung eine Richtung (📈/📉) trägt.
+    """
     msgs = []
     # Refs-Alert
     prev_refs = int(prev.get("last_total_refs") or 0)
@@ -3275,9 +3309,10 @@ def _liq_should_alert(cur: dict, prev: dict) -> tuple[bool, list[str]]:
     cur_lp  = float(cur.get("lp_sol") or 0.0)
     delta_lp_pct = abs(_calc_delta_pct(prev_lp, cur_lp))
     if delta_lp_pct >= LIQ_CFG["delta_lp_pct"]:
-        sign = "+" if cur_lp >= prev_lp else "−"
-        msgs.append(f"LP {sign}{int(delta_lp_pct)}%")
+        arrow = "📈" if cur_lp >= prev_lp else "📉"
+        msgs.append(f"{arrow} LP {int(delta_lp_pct)}%")
     return (len(msgs)>0, msgs)
+
 
 async def liq_check_watchlist_once() -> dict:
     """
@@ -3301,6 +3336,7 @@ async def liq_check_watchlist_once() -> dict:
         added = []
         pruned = []
         alerted = []
+        alert_lines = []  # für die Telegram-Alert-Zusammenfassung (mit Name + Link)
 
         for mint in tokens:
             try:
@@ -3319,6 +3355,9 @@ async def liq_check_watchlist_once() -> dict:
                 do_alert, msg = _liq_should_alert(cur, prev)
                 if do_alert:
                     alerted.append((m, "; ".join(msg)))
+                    nm  = (cur.get("name") or (m[:6] + "…"))
+                    url = (cur.get("ds_url") or f"https://dexscreener.com/solana/{m}")
+                    alert_lines.append(f"- {nm} ({m[:6]}…) {'; '.join(msg)}  {url}")
             except Exception as e:
                 lines.append(f"• {mint[:6]}… error: {e}")
 
@@ -3328,8 +3367,8 @@ async def liq_check_watchlist_once() -> dict:
 
         # Summary posten
         await tg_post("\n".join(lines))
-        if alerted:
-            txt = "⚠️ Liquidity Alerts:\n" + "\n".join([f"- {m[:6]}… {t}" for m, t in alerted])
+        if alert_lines:
+            txt = "⚠️ Liquidity Alerts:\n" + "\n".join(alert_lines)
             await tg_post(txt)
 
         return {"n": len(tokens), "added": added, "pruned": pruned, "alerted": alerted}
