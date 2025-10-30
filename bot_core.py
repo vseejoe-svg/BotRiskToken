@@ -3133,7 +3133,7 @@ class Config:
     pause_minutes: int = 10 # 15
     max_trades_per_hour: int = 30 # 24
     time_exit_bars: int = 60 # 900
-    allowed_hours="6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
+    allowed_hours=""
 
 @dataclass
 class State:
@@ -3360,7 +3360,7 @@ CONFIG_1M = Config(
     pause_after_losses=3,
     pause_minutes=12,
     max_trades_per_hour=8,
-    allowed_hours="6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
+    allowed_hours="",
 )
 
 # =========================
