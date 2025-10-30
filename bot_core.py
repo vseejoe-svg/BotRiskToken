@@ -95,7 +95,7 @@ if not HELIUS_API_KEY:
         pass
 # ===============================================================================
 # Globale Task-Handles (nur Background-Loops; KEIN Polling!)
-APP = None
+#APP = None
 AUTO_TASK: asyncio.Task | None = None          # z.B. dein auto_loop
 AUTOWATCH_TASK: asyncio.Task | None = None     # z.B. dein autowatch_loop
 AUTO_LIQ_TASK: asyncio.Task | None = None      # z.B. dein auto_liquidity_loop
@@ -1984,8 +1984,8 @@ async def sanity_check_token(
 # =========================
 # Liquidity-Check Command
 # =========================
-async def cmd_check_liqui(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not guard(update):
+async def cmd_check_liqui(update: Update, context: ContextTypes.DEFAULT_TYPE)
+    if not guard(update)
         return
     if not context.args:
         return await send(update, "Nutzung: /check_liq <MINT>")
