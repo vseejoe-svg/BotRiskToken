@@ -2717,7 +2717,7 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.effective_chat.send_document(
                     document=f,
                     filename=os.path.basename(PNL_CSV),
-                    caption="📄 Trades/PNL-CSV (v2)"
+                    caption="📄 Trades-PNL-CSV (SOL chain)"
                 )
         except Exception:
             pass
