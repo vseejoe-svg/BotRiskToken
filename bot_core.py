@@ -2560,167 +2560,404 @@ async def sell_all(mint: str) -> dict:
 
 #=================================================================================================
 
-async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    P&L mit:
-      • Realized (Day/Week/Total) + Token-Anzahl
-      • Max Drawdown (Day/Week/Total)
-      • Trade-Statistik (Day/Week/Total): Trades, Wins, Losses, Flat, Hit-Rate
-      • Unrealized (Open)
-      • kleines Balkendiagramm (Realized Day/Week/Total)
-    """
-    if not guard(update):
-        return
+# =========================
+# PNL MODULE (Drop-in)
+# =========================
+import os, csv, time, glob, tempfile, zipfile, datetime as dt
+from decimal import Decimal, ROUND_HALF_UP
 
-    rows = _load_trades_csv()
+# ---- Pfad zur CSV absolut (via ENV überschreibbar)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PNL_CSV  = os.environ.get("PNL_CSV", os.path.join(BASE_DIR, "trades_log.csv"))
 
-    # --- Zeitfenster (UTC) ---
-    now = time.time()
-    dt_now = dt.datetime.now(UTC)
-    dt_day0 = dt.datetime(dt_now.year, dt_now.month, dt_now.day, tzinfo=UTC)
-    ts_day0 = int(dt_day0.timestamp())
-    ts_week = int(now - 7 * 86400)
-
-    # ---- Helfer: Stats für ein Zeitfenster ----
-    def _stats_window(rows: list, ts_from: int | None):
-        """
-        returns:
-          realized_sum_f, max_dd_f, n_trades, n_tokens, wins, losses, flats, hit_rate_f
-        - berücksichtigt nur SELL-/PAPER-SELL-Zeilen (Executions)
-        - DD via kumulierter Realized-Equity (chronologische SELLs)
-        - Hit-Rate: Wins / (Wins + Losses) in %
-        """
-        # Executions filtern
-        exec_rows = []
-        for r in rows:
-            side = (r.get("side") or "").upper()
-            if "SELL" not in side:
-                continue
-            try:
-                ts = int(r.get("ts") or 0)
-            except Exception:
-                ts = 0
-            if ts_from is not None and ts < ts_from:
-                continue
-            exec_rows.append(r)
-
-        # Summen / Zähler
-        realized_sum = Decimal("0")
-        wins = 0
-        losses = 0
-        flats = 0
-        tokens = set()
-
-        # für DD: kumulierte Equity (nur SELLs), chronologisch
-        exec_rows.sort(key=lambda x: int(x.get("ts") or 0))
-        eq = Decimal("0")
-        peak = Decimal("0")
-        max_dd = Decimal("0")
-
-        for r in exec_rows:
-            # Token-Set
-            mint = (r.get("mint") or "").strip()
-            if mint:
-                tokens.add(mint)
-
-            # realized dieses Trades
-            realized = _realized_from_row(r)
-            realized_sum += realized
-
-            # Wins/Losses/Flat
-            if realized > 0:
-                wins += 1
-            elif realized < 0:
-                losses += 1
-            else:
-                flats += 1
-
-            # Drawdown-Tracking
-            eq += realized
-            if eq > peak:
-                peak = eq
-            dd = peak - eq
-            if dd > max_dd:
-                max_dd = dd
-
-        n_trades = len(exec_rows)
-        n_tokens = len(tokens)
-        denom = wins + losses
-        hit_rate = (wins / denom * 100.0) if denom > 0 else 0.0
-
-        q2 = lambda x: float(Decimal(str(x)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-        return (
-            q2(realized_sum),
-            q2(max_dd),
-            n_trades,
-            n_tokens,
-            wins,
-            losses,
-            flats,
-            q2(hit_rate),
-        )
-
-    # --- Day / Week / Total ---
-    (realized_day,  dd_day,  trades_day,  tokens_day,  wins_day,  losses_day,  flats_day,  hit_day)  = _stats_window(rows, ts_day0)
-    (realized_week, dd_week, trades_week, tokens_week, wins_week, losses_week, flats_week, hit_week) = _stats_window(rows, ts_week)
-    (realized_total,dd_total,trades_total,tokens_total,wins_total,losses_total,flats_total,hit_total) = _stats_window(rows, None)
-
-    # --- Balkendiagramm (Realized) ---
-    labels = ["Day", "Week", "Total"]
-    values = [realized_day, realized_week, realized_total]
-    fig, ax = plt.subplots(figsize=(6.6, 3.2), dpi=160)
-    ax.bar(labels, values)
-    ax.set_title("Realized PnL")
-    ax.set_ylabel("USD")
-    for i, v in enumerate(values):
-        ax.text(i, v, f"{v:+,.2f}", ha="center", va="bottom", fontsize=9)
-    buf = io.BytesIO()
-    plt.tight_layout()
-    fig.savefig(buf, format="png")
-    plt.close(fig)
-    buf.seek(0)
+# ---- Utilities
+def _d(x, default="0"):
+    """robust nach Decimal parsen"""
     try:
-        await update.effective_chat.send_photo(photo=buf, caption="📈 PnL – Day/Week/Total")
+        s = str(x).strip()
+        if not s or s.lower() == "none":
+            return Decimal(default)
+        return Decimal(s.replace(",", ""))
+    except Exception:
+        try:
+            return Decimal(str(float(x)))
+        except Exception:
+            return Decimal(default)
+
+def _q2(x: Decimal) -> Decimal:
+    return x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+# ---- Zeitzone / UTC-Offset aus ENV (kompatibel zu Auto-Watch)
+def _parse_offset_hhmm(val: str) -> float:
+    v = val.strip()
+    sign = 1
+    if v[0] in "+-":
+        sign = 1 if v[0] == "+" else -1
+        v = v[1:]
+    if ":" in v:
+        hh, mm = v.split(":", 1)
+        return sign * (float(hh) + float(mm) / 60.0)
+    return sign * float(v)
+
+def _env_utc_offset_hours() -> float:
+    # 1) TZ-Name (Europe/Berlin, UTC, Asia/Dubai, ...)
+    tz_env = os.environ.get("AUTO_WATCH_TZ") or os.environ.get("BOT_TZ") or os.environ.get("TZ")
+    if tz_env and any(c.isalpha() for c in tz_env):
+        try:
+            from zoneinfo import ZoneInfo  # Py>=3.9
+            tz = ZoneInfo(tz_env)
+            off = (dt.datetime.now(tz).utcoffset() or dt.timedelta(0)).total_seconds() / 3600.0
+            return float(off)
+        except Exception:
+            pass
+    # 2) Direkter Offset (+02:00, -5, +5.5, ...)
+    off_env = (
+        os.environ.get("AUTO_WATCH_UTC_OFFSET")
+        or os.environ.get("BOT_UTC_OFFSET")
+        or os.environ.get("UTC_OFFSET")
+        or os.environ.get("TZ_OFFSET")
+    )
+    if off_env:
+        try:
+            return _parse_offset_hhmm(off_env)
+        except Exception:
+            pass
+    return 0.0  # Default UTC
+
+def _utc_boundaries_for_day_and_week() -> tuple[int, int]:
+    """
+    Liefert (ts_day0_utc, ts_week_ago_utc)
+    - Day: lokale Mitternacht (gem. ENV) in UTC
+    - Week: rollierende 7 Tage
+    """
+    off = _env_utc_offset_hours()
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    local_now = now_utc + dt.timedelta(hours=off)
+    local_midnight = dt.datetime(local_now.year, local_now.month, local_now.day)
+    day0_utc = (local_midnight - dt.timedelta(hours=off)).replace(tzinfo=dt.timezone.utc)
+    ts_day0 = int(day0_utc.timestamp())
+    ts_week = int((now_utc - dt.timedelta(days=7)).timestamp())
+    return ts_day0, ts_week
+
+# ---- CSV laden
+def _load_trades_csv() -> list[dict]:
+    if not os.path.exists(PNL_CSV):
+        return []
+    rows = []
+    with open(PNL_CSV, "r", encoding="utf-8", newline="") as f:
+        rdr = csv.DictReader(f)
+        for r in rdr:
+            rows.append(r)
+    return rows
+
+# ---- Realized aus Zeile: 'realized_usd' bevorzugt, sonst qty*(exit-entry)
+def _realized_from_row(row: dict) -> Decimal:
+    ru = _d(row.get("realized_usd"))
+    if ru != 0:
+        return ru
+    # Rückwärtskomp: altern. Felder/Notes
+    ru = _d(row.get("realized")) or _d(row.get("pnl")) or _d(row.get("profit"))
+    if ru != 0:
+        return ru
+    qty = _d(row.get("qty"))
+    entry_px = _d(row.get("entry_px"))
+    exit_px = _d(row.get("exit_px"))
+    if qty != 0 and (entry_px != 0 or exit_px != 0):
+        return (exit_px - entry_px) * qty
+    return Decimal("0")
+
+# ---- Event-Erkennung: TP1/TP2/SL/TSL/SELL/BUY (Selektion aus side/status/note)
+def _extract_event(row: dict) -> str:
+    text = " ".join([(row.get("side") or ""), (row.get("status") or ""), (row.get("note") or "")]).upper()
+    # Reihenfolge beachten (TSL enthält "SL")
+    if "TP2" in text or "TP 2" in text:
+        return "TP2"
+    if "TP1" in text or "TP 1" in text:
+        return "TP1"
+    if "TRAIL" in text or "TSL" in text or "TRAILING SL" in text:
+        return "TSL"
+    if " SL" in f" {text} " or text.strip() == "SL":
+        return "SL"
+    if "SELL" in text:
+        return "SELL"
+    if "BUY" in text:
+        return "BUY"
+    return ""
+
+# ---- Max-Drawdown auf kumulierter Realized-Kurve
+def _max_drawdown(curve: list[Decimal]) -> Decimal:
+    if not curve:
+        return Decimal("0")
+    peak = curve[0]
+    mdd = Decimal("0")
+    for v in curve:
+        if v > peak:
+            peak = v
+        dd = peak - v
+        if dd > mdd:
+            mdd = dd
+    return _q2(mdd)
+
+# ---- Aggregation über Zeitraum
+def _aggregate_for_range(rows: list[dict], ts_from: int | None) -> tuple[Decimal, dict, dict, int]:
+    """
+    Returns:
+      realized_sum (Decimal),
+      event_counts {'TP1':int,'TP2':int,'SL':int,'TSL':int,'SELL':int,'BUY':int},
+      stats {'executions':int,'wins':int,'losses':int,'flat':int,'mdd':Decimal},
+      unique_tokens_count
+    """
+    realized = Decimal("0")
+    counts = {k: 0 for k in ("TP1","TP2","SL","TSL","SELL","BUY")}
+    wins = losses = flat = 0
+    execs = 0
+    tokens = set()
+    curve = []
+    cum = Decimal("0")
+
+    for r in rows:
+        try:
+            ts = int(r.get("ts") or r.get("timestamp") or 0)
+        except Exception:
+            ts = 0
+        if ts_from is not None and ts < ts_from:
+            continue
+
+        side = (r.get("side") or "").strip()
+        if side:
+            execs += 1
+
+        ev = _extract_event(r)
+        if ev:
+            counts[ev] += 1
+
+        # Realized nur auf Close-/Sell-/TP/SL-Events
+        if ev in ("TP1","TP2","SL","TSL","SELL") or "SELL" in (side.upper()):
+            rr = _realized_from_row(r)
+            if rr != 0:
+                realized += rr
+                cum += rr
+                curve.append(cum)
+                if rr > 0:
+                    wins += 1
+                elif rr < 0:
+                    losses += 1
+                else:
+                    flat += 1
+            tok = (r.get("token") or r.get("mint") or "").strip()
+            if tok:
+                tokens.add(tok)
+
+    mdd = _max_drawdown(curve)
+    stats = {"executions": execs, "wins": wins, "losses": losses, "flat": flat, "mdd": mdd}
+    return _q2(realized), counts, stats, len(tokens)
+
+# ---- Snapshot-Text (wird von /pnl und Auto-Push genutzt)
+async def _pnl_snapshot_text() -> str:
+    rows = _load_trades_csv()
+    ts_day0, ts_week = _utc_boundaries_for_day_and_week()
+
+    d_sum, d_cnt, d_stats, d_tokens = _aggregate_for_range(rows, ts_day0)
+    w_sum, w_cnt, w_stats, w_tokens = _aggregate_for_range(rows, ts_week)
+    t_sum, t_cnt, t_stats, t_tokens = _aggregate_for_range(rows, None)
+
+    # Unrealized (offene Positionen) – bestehende Funktion nutzen, wenn verfügbar
+    unreal_total = Decimal("0")
+    try:
+        ut, _ = total_unreal_pnl()  # ← deine vorhandene Funktion
+        unreal_total = _q2(Decimal(str(ut)))
     except Exception:
         pass
 
-    # --- Unrealized + offene Positionen ---
-    unrealized_total, _rows_unreal = total_unreal_pnl()
+    def _fmt_stats(label, s, tok_count):
+        hr = (s["wins"] / max(1, (s["wins"] + s["losses"])) * 100.0)
+        return (
+            f"• {label}:  {s['wins']} | {s['losses']} | {s['flat']}  | "
+            f"Hit‑Rate: {hr:.1f}%  | Tokens: {tok_count}"
+        )
 
-    # --- Ausgabe-Text ---
     lines = [
-        "📊 <b>P&L – Übersicht</b>",
+        "📊 P&L – Übersicht",
+        "💰 Realized",
+        f"• Day:   {d_sum:+,.2f} USD",
+        f"• Week:  {w_sum:+,.2f} USD",
+        f"• Total: {t_sum:+,.2f} USD",
+        f"• Unrealized (Open): {unreal_total:+,.2f} USD",
         "",
-        "💰 <b>Realized</b>",
-        f"• Day:   {realized_day:+,.2f} USD   (Tokens: {tokens_day})",
-        f"• Week:  {realized_week:+,.2f} USD  (Tokens: {tokens_week})",
-        f"• Total: {realized_total:+,.2f} USD  (Tokens: {tokens_total})",
-        f"• Unrealized (Open): {unrealized_total:+,.2f} USD",
+        "🎯 Trigger‑Zähler (TP/SL/TSL)",
+        f"• Day:   TP1 {d_cnt['TP1']} | TP2 {d_cnt['TP2']} | SL {d_cnt['SL']} | TSL {d_cnt['TSL']}",
+        f"• Week:  TP1 {w_cnt['TP1']} | TP2 {w_cnt['TP2']} | SL {w_cnt['SL']} | TSL {w_cnt['TSL']}",
+        f"• Total: TP1 {t_cnt['TP1']} | TP2 {t_cnt['TP2']} | SL {t_cnt['SL']} | TSL {t_cnt['TSL']}",
         "",
-        "📉 <b>Max Drawdown</b>",
-        f"• Day:   {(-dd_day):+,.2f} USD",
-        f"• Week:  {(-dd_week):+,.2f} USD",
-        f"• Total: {(-dd_total):+,.2f} USD",
+        "📉 Max Drawdown",
+        f"• Day:   {-d_stats['mdd']:+,.2f} USD",
+        f"• Week:  {-w_stats['mdd']:+,.2f} USD",
+        f"• Total: {-t_stats['mdd']:+,.2f} USD",
         "",
-        "📈 <b>Trade-Stats</b>",
-        f"• Day:   Trades (executions): {trades_day} | Wins: {wins_day} | Losses: {losses_day} | Flat: {flats_day} | Hit-Rate: {hit_day:.1f}%",
-        f"• Week:  Trades (executions): {trades_week} | Wins: {wins_week} | Losses: {losses_week} | Flat: {flats_week} | Hit-Rate: {hit_week:.1f}%",
-        f"• Total: Trades (executions): {trades_total} | Wins: {wins_total} | Losses: {losses_total} | Flat: {flats_total} | Hit-Rate: {hit_total:.1f}%",
+        "📋 Trade‑Stats",
+        _fmt_stats("Day  (W|L|F)", d_stats, d_tokens),
+        _fmt_stats("Week (W|L|F)", w_stats, w_tokens),
+        _fmt_stats("Total(W|L|F)", t_stats, t_tokens),
     ]
+    return "\n".join(lines)
 
-    await update.effective_chat.send_message("\n".join(lines), parse_mode=ParseMode.HTML)
-
-    # CSV anhängen (optional)
-    if os.path.exists(PNL_CSV):
+# ---- Auto-Push nach SELL/TP/SL (aktiv: PNL_AUTO_PUSH=1)
+async def _pnl_auto_push():
+    if os.environ.get("PNL_AUTO_PUSH", "0").strip().lower() in ("1","true","yes","on"):
         try:
-            with open(PNL_CSV, "rb") as f:
-                await update.effective_chat.send_document(
-                    document=f,
-                    filename=os.path.basename(PNL_CSV),
-                    caption="📄 Auto_Trade_Bot/PNL-CSV (SOL chain)"
-                )
+            await tg_post(await _pnl_snapshot_text())
         except Exception:
             pass
+
+# ----------------------
+# Telegram Commands
+# ----------------------
+
+# /pnl  -> Textübersicht
+async def cmd_pnl(update, context):
+    if not guard(update):
+        return
+    try:
+        text = await _pnl_snapshot_text()
+        await send(update, text)
+    except Exception as e:
+        await send(update, f"PNL-Fehler: {e}")
+
+# /pnl_tail  -> letzte CSV-Zeilen (Debug)
+async def cmd_pnl_tail(update, context):
+    if not guard(update):
+        return
+    rows = _load_trades_csv()
+    if not rows:
+        return await send(update, "Keine Einträge in trades_log.csv.")
+    last = rows[-10:]
+    out = ["📄 Letzte Trades (CSV):"]
+    for r in last:
+        out.append(
+            f"{r.get('ts_iso','?')}  {(r.get('side') or '?'):>10}  "
+            f"{(r.get('token') or r.get('mint') or '?'):<12}  "
+            f"realized={r.get('realized_usd','') or '-'}  sig={r.get('sig','')}"
+        )
+    await send(update, "\n".join(out))
+
+# /pnl_csv -> aktuelle CSV als Download
+async def cmd_pnl_csv(update, context):
+    if not guard(update):
+        return
+    if not os.path.exists(PNL_CSV):
+        return await send(update, "Keine trades_log.csv gefunden.")
+    try:
+        caption = "📥 trades_log.csv"
+        with open(PNL_CSV, "rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=os.path.basename(PNL_CSV),
+                caption=caption
+            )
+    except Exception as e:
+        await send(update, f"CSV-Download fehlgeschlagen: {e}")
+
+# /pnl_csv_all -> alle CSV-Varianten (inkl. .bak) als ZIP
+async def cmd_pnl_csv_all(update, context):
+    if not guard(update):
+        return
+    candidates = glob.glob(os.path.join(BASE_DIR, "trades_log.csv*"))
+    if not candidates:
+        return await send(update, "Keine CSV-Dateien gefunden.")
+    zip_path = os.path.join(BASE_DIR, f"trades_logs_{int(time.time())}.zip")
+    try:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in candidates:
+                if os.path.isfile(p):
+                    zf.write(p, arcname=os.path.basename(p))
+        with open(zip_path, "rb") as f:
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=f,
+                filename=os.path.basename(zip_path),
+                caption="📥 Alle PNL-CSV-Dateien (ZIP)"
+            )
+    except Exception as e:
+        await send(update, f"ZIP-Export fehlgeschlagen: {e}")
+    finally:
+        try:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+        except Exception:
+            pass
+
+# /pnl_chart -> Bar-Chart Day/Week/Total (Realized)
+async def cmd_pnl_chart(update, context):
+    if not guard(update):
+        return
+    try:
+        rows = _load_trades_csv()
+        ts_day0, ts_week = _utc_boundaries_for_day_and_week()
+        d_sum, _, _, _ = _aggregate_for_range(rows, ts_day0)
+        w_sum, _, _, _ = _aggregate_for_range(rows, ts_week)
+        t_sum, _, _, _ = _aggregate_for_range(rows, None)
+
+        # Matplotlib (Headless)
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        labels = ["Day", "Week", "Total"]
+        vals = [float(d_sum), float(w_sum), float(t_sum)]
+
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=150)
+        bars = ax.bar(labels, vals)
+        for bar, val in zip(bars, vals):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                bar.get_height(),
+                f"{val:+.2f}",
+                ha="center", va="bottom", fontsize=9
+            )
+        ax.set_title("Realized PnL")
+        ax.set_ylabel("USD")
+        ax.axhline(0, linewidth=1)
+        fig.tight_layout()
+
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        fig.savefig(tmp.name)
+        plt.close(fig)
+
+        with open(tmp.name, "rb") as f:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=f,
+                caption="📈 PnL – Day/Week/Total"
+            )
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
+
+    except Exception as e:
+        await send(update, f"Chart-Fehler: {e}")
+
+# ----------------------
+# Hinweise zur Einbindung
+# ----------------------
+# 1) Commands registrieren (an deiner zentralen Stelle):
+#    app.add_handler(CommandHandler("pnl",         cmd_pnl))
+#    app.add_handler(CommandHandler("pnl_tail",    cmd_pnl_tail))
+#    app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
+#    app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
+#    app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
+#
+# 2) Auto-Push aktivieren (optional):
+#    setze ENV: PNL_AUTO_PUSH=1
+#    und rufe nach JEDEM SELL/TP/SL-Logeintrag:
+#       await _pnl_auto_push()
+#
+# 3) Zeitzone/UTC:
+#    - Setze z.B. AUTO_WATCH_TZ=Europe/Berlin  (oder BOT_TZ/TZ)
+#      oder   AUTO_WATCH_UTC_OFFSET=+2  (BOT_UTC_OFFSET/UTC_OFFSET/TZ_OFFSET)
+#    - Fällt sonst auf UTC zurück.
+
 
 
 #=================================================================================================
@@ -5844,6 +6081,11 @@ async def build_app():
     app.add_handler(CallbackQueryHandler(on_observe_add_callback,  pattern=r"^obsadd\|"))
     app.add_handler(CallbackQueryHandler(on_observe_remove_callback, pattern=r"^obsrm\|"))
     app.add_handler(CommandHandler("diag_webhook", cmd_diag_webhook))
+    app.add_handler(CommandHandler("pnl",         cmd_pnl))
+    app.add_handler(CommandHandler("pnl_tail",    cmd_pnl_tail))
+    app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
+    app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
+    app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
     return app
 
 POLLING_STARTED = False
