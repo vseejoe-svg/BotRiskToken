@@ -9,7 +9,7 @@ services:
         value: 3.11.9
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-      - key: ALLOWED_CHAT_ID
+      - key: TELEGRAM_ALLOWED_CHAT
         sync: false
       - key: RPC_URL
         sync: false
@@ -18,7 +18,5 @@ services:
       - key: WALLET_SECRET
         sync: false
       - key: BIRDEYE_API_KEY
-        sync: false
-      - key: HELIUS_API_KEY
         sync: false
       # Ladder-Parameter kannst du hier auch direkt pflegen, sonst .env
