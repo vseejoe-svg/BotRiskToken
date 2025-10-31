@@ -4,4 +4,18 @@ services:
     runtime: python
     buildCommand: pip install -U pip && pip install -r requirements.txt
     startCommand: uvicorn bot_core:svc --host 0.0.0.0 --port $PORT --proxy-headers
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: PAPER_MODE        # 1 = Simulationsmodus
+        value: "0"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false            # Wert im Dashboard setzen
+      - key: SOLANA_PRIVATE_KEY
+        sync: false            # Wert im Dashboard setzen (Base64 oder JSON-Array)
+      - key: RPC_URL
+        sync: false
+      - key: WALLET_ADDRESS
+        sync: false
+
 
