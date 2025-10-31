@@ -2,10 +2,8 @@ services:
   - type: web
     name: memecoin-ladder-bot
     runtime: python
-    plan: starter
     buildCommand: pip install -U pip && pip install -r requirements.txt
     startCommand: uvicorn bot_core:svc --host 0.0.0.0 --port $PORT --proxy-headers
-    autoDeploy: true
     envVars:
       - key: PYTHON_VERSION     # <- so setzt Render die Python-Version
         value: 3.11.9
