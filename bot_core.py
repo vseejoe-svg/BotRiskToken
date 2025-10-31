@@ -43,7 +43,6 @@ from telegram.ext import CallbackQueryHandler
 from ladder.policy import LDR_POLICY
 from ladder.commands import register_ladder_commands
 
-
 # ===============================================================================
 import asyncio, os  # <-- falls oben noch nicht vorhanden
 import contextlib
@@ -3936,19 +3935,20 @@ def format_debug_line(mint: str, dbg: Dict[str, float], lookback_secs: int) -> s
     return (f"🔎 {mint[:6]} px={dbg['px']:.6f} v5s≈{lookback_secs} | ATR={dbg['ATR']:.6f} ADX={dbg['ADX']:.1f} | vol_ok={'True' if dbg['vol_ok'] else 'False'}")
 #============================START ===================================================
 def _collect_all_commands(app) -> list[str]:
-    """
-    Liest alle in der Application registrierten CommandHandler ein (Gruppe 0..n)
-    und liefert eine sortierte Liste der Befehlsnamen (ohne '/').
-    """
     cmds = set()
     try:
         for _, handlers in (app.handlers or {}).items():
             for h in handlers:
-                # PTB v20+: CommandHandler hat 'commands' (set[str])
                 if hasattr(h, "commands") and h.commands:
                     for c in h.commands:
-                        # .commands kann strings oder Objects enthalten; wir normalisieren
-                        cmds.add(str(c).lstrip("/"))
+                        # PTB v20/21: c kann ein Objekt sein (mit .command/.name)
+                        name = (
+                            getattr(c, "command", None)
+                            or getattr(c, "name", None)
+                            or (c if isinstance(c, str) else str(c))
+                        )
+                        name = str(name).lstrip("/").split()[0]  # robust normalisieren
+                        cmds.add(name)
     except Exception:
         pass
     return sorted(cmds)
@@ -3959,11 +3959,14 @@ def _categorize_commands(cmds: list[str]) -> dict:
         "💧 Liquidity": [],
         "🪙 Trading": [],
         "🧰 System/Tools": [],
+        "🪜 Ladder": [],            # neu
         "🗂️ Sonstiges": [],
     }
     for c in cmds:
         lc = c.lower()
-        if "pnl" in lc or "stats" in lc or "chart" in lc:
+        if lc.startswith("ldr_"):
+            cats["🪜 Ladder"].append(c)     # neu
+        elif "pnl" in lc or "stats" in lc or "chart" in lc:
             cats["📊 PnL & Reporting"].append(c)
         elif "liq" in lc or "watch" in lc or "auto" in lc:
             cats["💧 Liquidity"].append(c)
@@ -3973,8 +3976,8 @@ def _categorize_commands(cmds: list[str]) -> dict:
             cats["🧰 System/Tools"].append(c)
         else:
             cats["🗂️ Sonstiges"].append(c)
-    # Leere Kategorien entfernen
-    return {k:v for k,v in cats.items() if v}
+    return {k: v for k, v in cats.items() if v}
+
 
 def _mini_pnl_line() -> str:
     """
