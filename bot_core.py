@@ -39,6 +39,11 @@ from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import CallbackQueryHandler
 
+# --- Ladder Integration (NEU) ---
+from ladder.policy import LDR_POLICY
+from ladder.commands import register_ladder_commands
+
+
 # ===============================================================================
 import asyncio, os  # <-- falls oben noch nicht vorhanden
 import contextlib
@@ -2991,13 +2996,6 @@ async def cmd_pnl_chart(update, context):
 # ----------------------
 # Hinweise zur Einbindung
 # ----------------------
-# 1) Commands registrieren:
-#    app.add_handler(CommandHandler("pnl",         cmd_pnl))
-#    app.add_handler(CommandHandler("pnl_tail",    cmd_pnl_tail))
-#    app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
-#    app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
-#    app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
-#
 # 2) Auto-Push aktivieren (optional):
 #    ENV setzen: PNL_AUTO_PUSH=1
 #    und nach JEDEM SELL/TP/SL-Logeintrag in deinen Order-Handlern:
@@ -6210,7 +6208,6 @@ req = HTTPXRequest(http_version="1.1", connect_timeout=30.0, read_timeout=60.0, 
 
 async def build_app():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).request(req).build()
-   # Core
     app.add_handler(CommandHandler("start",        cmd_start))
     app.add_handler(CommandHandler("status",       cmd_status))
     app.add_handler(CommandHandler("open_trades",  cmd_open_trades))
@@ -6221,50 +6218,47 @@ async def build_app():
     app.add_handler(CommandHandler("positions",    cmd_positions))
     app.add_handler(CommandHandler("set_notional", cmd_set_notional))
     app.add_handler(CommandHandler("diag",         cmd_diag))
+    app.add_handler(CommandHandler("pnl",          cmd_pnl))
     app.add_handler(CommandHandler("debug",        cmd_debug))
-    app.add_handler(CommandHandler("chart",        cmd_chart))
-    # Boot/Stop/Health
     app.add_handler(CommandHandler("boot",         cmd_boot))
     app.add_handler(CommandHandler("shutdown",     cmd_shutdown))
     app.add_handler(CommandHandler("health",       cmd_health))
-    # Discovery & Trending & Proxy
-    app.add_handler(CommandHandler("scan_ds",      cmd_scan_ds))
+    app.add_handler(CommandHandler("chart",        cmd_chart))
+    app.add_handler(CommandHandler("scan_ds", cmd_scan_ds))
     app.add_handler(CallbackQueryHandler(on_scan_add_callback, pattern=r"^scanadd\|"))
-    app.add_handler(CommandHandler("dsdiag",       cmd_dsdiag))
-    app.add_handler(CommandHandler("trending",     cmd_trending))
-    app.add_handler(CommandHandler("dsraw",        cmd_dsraw))
-    app.add_handler(CommandHandler("ds_trending",  cmd_ds_trending))
-    app.add_handler(CommandHandler("set_proxy",    cmd_set_proxy))
-    # Sanity
-    app.add_handler(CommandHandler("sanity",       cmd_sanity))
-    # Auto‑Watchlist
-    app.add_handler(CommandHandler("autowatch",    cmd_autowatch))
-    app.add_handler(CommandHandler("aw_config",    cmd_aw_config))
-    app.add_handler(CommandHandler("aw_status",    cmd_aw_status))
-    app.add_handler(CommandHandler("aw_now",       cmd_aw_now))
-    app.add_handler(CommandHandler("aw_observe",   cmd_aw_observe))
-    app.add_handler(CallbackQueryHandler(on_observe_add_callback,    pattern=r"^obsadd\|"))
+    app.add_handler(CommandHandler("dsdiag", cmd_dsdiag))
+    app.add_handler(CommandHandler("trending", cmd_trending))
+    app.add_handler(CommandHandler("dsraw", cmd_dsraw))
+    app.add_handler(CommandHandler("ds_trending", cmd_ds_trending))
+    app.add_handler(CommandHandler("set_proxy", cmd_set_proxy))
+    app.add_error_handler(_error_handler)
+    app.add_handler(CommandHandler("sanity",      cmd_sanity))
+    app.add_handler(CommandHandler("autowatch",  cmd_autowatch))
+    app.add_handler(CommandHandler("aw_config",  cmd_aw_config))
+    app.add_handler(CommandHandler("aw_status",  cmd_aw_status))
+    app.add_handler(CommandHandler("aw_now",     cmd_aw_now))
+    app.add_handler(CommandHandler("check_liq", cmd_check_liq))
+    app.add_handler(CommandHandler("auto_liq",   cmd_auto_liq))
+    app.add_handler(CommandHandler("liq_config", cmd_liq_config))
+    app.add_handler(CommandHandler("check_liq_onchain",  cmd_check_liqui))
+    app.add_handler(CommandHandler("dashboard",  cmd_dashboard))
+    app.add_handler(CommandHandler("aw_observe",  cmd_aw_observe))                 # neuer Command
+    app.add_handler(CallbackQueryHandler(on_observe_add_callback,  pattern=r"^obsadd\|"))
     app.add_handler(CallbackQueryHandler(on_observe_remove_callback, pattern=r"^obsrm\|"))
-    # Liquidity
-    app.add_handler(CommandHandler("check_liq",         cmd_check_liq))
-    app.add_handler(CommandHandler("check_liq_onchain", cmd_check_liqui))  # alias/zweiter Check
-    app.add_handler(CommandHandler("auto_liq",          cmd_auto_liq))
-    app.add_handler(CommandHandler("liq_config",        cmd_liq_config))
-    # Dashboard & Webhook‑Diagnose
-    app.add_handler(CommandHandler("dashboard",    cmd_dashboard))
     app.add_handler(CommandHandler("diag_webhook", cmd_diag_webhook))
-    # PnL‑Erweiterungen
-    app.add_handler(CommandHandler("pnl",          cmd_pnl))
-    app.add_handler(CommandHandler("pnl_tail",     cmd_pnl_tail))
-    app.add_handler(CommandHandler("pnl_csv",      cmd_pnl_csv))
-    app.add_handler(CommandHandler("pnl_csv_all",  cmd_pnl_csv_all))
-    app.add_handler(CommandHandler("pnl_chart",    cmd_pnl_chart))
+    app.add_handler(CommandHandler("pnl",         cmd_pnl))
+    app.add_handler(CommandHandler("pnl_tail",    cmd_pnl_tail))
+    app.add_handler(CommandHandler("pnl_csv",     cmd_pnl_csv))
+    app.add_handler(CommandHandler("pnl_csv_all", cmd_pnl_csv_all))
+    app.add_handler(CommandHandler("pnl_chart",   cmd_pnl_chart))
     app.add_handler(CallbackQueryHandler(cb_pnl_buttons, pattern=r"^PNL:(CHART|CSV|CSVALL)$"))
-    # Watchlist (kompakt) + Legacy‑Kompatibilität
     app.add_handler(CommandHandler("watchlist",    cmd_watchlist_compact))
     app.add_handler(CommandHandler("add_watch",    cmd_add_watch))
     app.add_handler(CommandHandler("remove_watch", cmd_remove_watch))
-    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:
+    app.add_handler(CallbackQueryHandler(cb_watchlist_buttons, pattern=r"^WL:(REFRESH|RM:.+)$"))
+    # --- Ladder: Telegram-Commands registrieren (NEU) ---
+    register_ladder_commands(app)
+
     return app
 
 POLLING_STARTED = False
@@ -6657,40 +6651,62 @@ async def auto_loop(app: Application):
             await asyncio.sleep(2.0)
 
 
+# ===== Ladder-aware Signal Executor =====
 async def _apply_signals(app: Application, mint: str, bar: dict, signals: list[dict]):
     """
-    Hilfsfunktion: setzt Entry/Reduce/Close Signale um (wiederverwendbar in beiden Pfaden).
+    Setzt Entry/Reduce/Close um. Vor ENTRY greift die Barbell-Ladder-Policy (S1–S4 + Risk).
     """
     for s in signals:
         typ = s.get("type")
 
         if typ == "entry" and mint not in OPEN_POS:
-            if float(bar.get("close") or 0.0) <= 0:
+            px = float(bar.get("close") or 0.0)
+            if px <= 0:
                 continue
+
+            # ---- Ladder Gate (S1..S4 & Risk) ----
+            eng = ENGINES.get(mint)
+            diag = getattr(eng, "last_diag", {}) if eng else {}
+            allowed, reason, bucket = await LDR_POLICY.allow_entry(mint, bar, diag)
+            if not allowed:
+                # Optional: Debug-Ausgabe drosseln – hier bewusst kurz & nur bei aktivem DEBUG
+                try:
+                    if DEBUG_SCAN:
+                        await tg_post(f"🚫 LadderGate {mint[:6]}: {reason}")
+                except Exception:
+                    pass
+                continue
+
+            # Bucket-Notional bestimmen (übersteuert DEFAULT_NOTIONAL_SOL nicht global)
+            try:
+                notional_sol = LDR_POLICY.notional_for_bucket(bucket, DEFAULT_NOTIONAL_SOL)
+            except Exception:
+                notional_sol = DEFAULT_NOTIONAL_SOL
+
             try:
                 # BUY
-                res = await buy_wsol_to_token(mint, DEFAULT_NOTIONAL_SOL, bar["close"])
-                # --- NEU: SL/TPs für die Meldung berechnen ---                
-                eng = ENGINES.get(mint)
+                res = await buy_wsol_to_token(mint, notional_sol, px)
+
+                # SL/TP Info aus Engine für Telegram-Msg (wie in deiner Version)
+                extra = ""
                 if eng:
-                    st  = eng.st; cfg = eng.cfg
-                    entry = float(bar["close"])
+                    cfg = eng.cfg
                     atr   = float(eng.last_diag.get("atr") or 0.0)
-                    atr_pc = float(eng.last_diag.get("atr_pc") or ((atr/entry)*100.0 if entry else 0.0))
-                    sl_abs = entry - atr * cfg.risk_atr
-                    R      = entry - sl_abs
-                    tp1_px = entry + cfg.tp1_rr * R
-                    tp2_px = entry + cfg.tp2_rr * R
+                    atr_pc = float(eng.last_diag.get("atr_pc") or ((atr/px)*100.0 if px else 0.0))
+                    sl_abs = px - atr * cfg.risk_atr
+                    R      = px - sl_abs
+                    tp1_px = px + cfg.tp1_rr * R
+                    tp2_px = px + cfg.tp2_rr * R
                     extra  = (
                         f"\nSL≈{sl_abs:.6f}  TP1≈{tp1_px:.6f}  TP2≈{tp2_px:.6f}  "
-                        f"(ATR≈{atr:.6f} / {atr_pc:.2f}%)"
-                    )                
+                        f"(ATR≈{atr:.6f} / {atr_pc:.2f}%)  [{bucket}]"
+                    )
 
-                else:
-                    extra = ""
+                LDR_POLICY.mark_entry(mint)
+
                 await app.bot.send_message(
                     ALLOWED_CHAT_ID,
-                    f"🚀 ENTRY {mint[:6]} @~{bar['close']:.6f} | {DEFAULT_NOTIONAL_SOL} SOL\nSig:{res['sig']} {res['status']}{extra}"
+                    f"🚀 ENTRY {mint[:6]} @~{px:.6f} | {notional_sol} SOL\nSig:{res['sig']} {res['status']}{extra}"
                 )
             except Exception as e:
                 await app.bot.send_message(ALLOWED_CHAT_ID, f"❌ BUY-Fehler {mint[:6]}: {e}")
@@ -6703,29 +6719,32 @@ async def _apply_signals(app: Application, mint: str, bar: dict, signals: list[d
                     res = await _paper_sell_partial(mint, frac, mkt_price_hint=hint if hint > 0 else None)
                 else:
                     res = await sell_partial(mint, frac)
-                # Label:
-                label = "TP1" if abs(frac- (ENGINES[mint].cfg.tp1_frac_pc/100.0)) < 1e-6 else \
-                        "TP2" if abs(frac- (ENGINES[mint].cfg.tp2_frac_pc/100.0)) < 1e-6 else "REDUCE"
+                label = "REDUCE"
+                try:
+                    cfg = ENGINES[mint].cfg
+                    if abs(frac - (cfg.tp1_frac_pc/100.0)) < 1e-6: label = "TP1"
+                    elif abs(frac - (cfg.tp2_frac_pc/100.0)) < 1e-6: label = "TP2"
+                except Exception:
+                    pass
                 await app.bot.send_message(
                     ALLOWED_CHAT_ID,
-                    f"✅ {label} {mint[:6]} {int(frac*100)}% @~{bar['close']:.6f}\nSig:{res['sig']} {res['status']}"
+                    f"✅ {label} {mint[:6]} {int(frac*100)}% @~{hint:.6f}\nSig:{res['sig']} {res['status']}"
                 )
             except Exception as e:
                 await app.bot.send_message(ALLOWED_CHAT_ID, f"❌ Reduce-Fehler {mint[:6]}: {e}")
 
         elif typ == "close":
-            # 0-Preis-Guard
-            if float(bar.get("close") or 0.0) <= 0:
+            px = float(bar.get("close") or 0.0)
+            if px <= 0:
                 continue
             try:
                 res = await sell_all(mint)
                 await app.bot.send_message(
                     ALLOWED_CHAT_ID,
-                    f"🏁 CLOSE {mint[:6]} @~{bar['close']:.6f}\nSig:{res['sig']} {res['status']}"
+                    f"🏁 CLOSE {mint[:6]} @~{px:.6f}\nSig:{res['sig']} {res['status']}"
                 )
             except Exception as e:
                 await app.bot.send_message(ALLOWED_CHAT_ID, f"❌ Close-Fehler {mint[:6]}: {e}")
-
 # =========================
 # Starter (Notebook/Colab)
 # =========================
