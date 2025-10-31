@@ -6,21 +6,23 @@ fastapi==0.104.1
 uvicorn[standard]==0.23.2
 pydantic==2.6.4
 
-# HTTP & Utils
-httpx==0.27.0
+# HTTP & Async
 requests==2.31.0
+httpx==0.27.0
 aiohttp==3.9.5
-ujson
-python-dotenv==1.0.1
 nest_asyncio
+
+# Utils
+python-dotenv==1.0.1
+ujson==5.10.0      # (oder weglassen, wenn nicht zwingend nötig)
 
 # Data/Plot
 numpy==1.26.4
 pandas==2.2.2
 matplotlib==3.8.4
 
-# Solana-Stack (auf ein zusammenpassendes Paar achten)
+# Solana-Stack (zueinander passend!)
 solana==0.30.2
 solders==0.18.1
 base58
-PyNaCl
+PyNaCl==1.5.0
