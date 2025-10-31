@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: memecoin-ladder-bot
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn bot_core:svc --host 0.0.0.0 --port $PORT --proxy-headers
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: ALLOWED_CHAT_ID
+        sync: false
+      - key: RPC_URL
+        sync: false
+      - key: WALLET_PUBKEY
+        sync: false
+      - key: WALLET_SECRET
+        sync: false
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: HELIUS_API_KEY
+        sync: false
+      # Ladder-Parameter kannst du hier auch direkt pflegen, sonst .env
